@@ -1,0 +1,88 @@
+{
+	"name": "belisoful/prado-image",
+	"type": "prado4-extension",
+	"description": "Image containers, metadata editing, and codecs for the PRADO PHP framework: read-write JPEG, TIFF, PNG, WebP/RIFF, and GIF87a/89a; EXIF through Exif 3.1 with makernotes, XMP (ISO 16684-1), IPTC (IIM), Photoshop 8BIM, JFIF/JFXX, JUMBF, PrintIM, and Exif WAVE audio; read-write ICC profiles with a pure-PHP matrix/TRC color transform; dual GD/ImageMagick raster conversion; and the LZW/GIF-LZW/PackBits/CCITT-fax/horizontal-predictor codecs.",
+	"keywords": [
+		"prado",
+		"framework",
+		"image",
+		"jpeg",
+		"tiff",
+		"png",
+		"webp",
+		"riff",
+		"gif",
+		"apng",
+		"exif",
+		"xmp",
+		"iptc",
+		"jfif",
+		"jumbf",
+		"makernote",
+		"metadata",
+		"icc",
+		"gd",
+		"imagick",
+		"lzw",
+		"packbits",
+		"ccitt",
+		"extension"
+	],
+	"homepage": "https://github.com/pradosoft/prado-image",
+	"license": "BSD-3-Clause",
+	"authors": [
+		{
+			"name": "Brad Anderson",
+			"email": "belisoful@icloud.com",
+			"role": "Developer",
+			"homepage": "https://github.com/belisoful"
+		}
+	],
+	"autoload": {
+		"psr-4": {
+			"Prado\\": "src"
+		}
+	},
+	"repositories": [
+		{
+			"type": "composer",
+			"url": "https://asset-packagist.org"
+		}
+	],
+	"require": {
+		"php": ">=8.1.0"
+	},
+	"suggest": {
+		"ext-gd": "Raster conversion as \\GdImage objects (TImageGraphics's preferred library).",
+		"ext-imagick": "Raster conversion as \\Imagick objects (TImageGraphics's alternate library); required for lookup-table ICC transforms, embedded profiles, and high bit depths.",
+		"ext-dom": "The DOM behind TXMP; required for reading or writing XMP packets.",
+		"ext-zlib": "Deflate for PNG iCCP/zTXt chunk payloads.",
+		"ext-iconv": "Charset conversion of IPTC text, EXIF UserComment, and Photoshop unicode strings."
+	},
+	"require-dev": {
+		"pradosoft/prado": "^4.4 || dev-master",
+		"phpunit/phpunit": "^10",
+		"phpdocumentor/shim": "^3",
+		"friendsofphp/php-cs-fixer": "^3.94",
+		"phpstan/phpstan": "^2.1"
+	},
+	"minimum-stability": "dev",
+	"prefer-stable": true,
+	"config": {
+		"platform": {
+			"php": "8.1"
+		},
+		"allow-plugins": {
+			"phpdocumentor/shim": true
+		}
+	},
+	"scripts": {
+		"unittest": "vendor/bin/phpunit --testsuite unit"
+	},
+	"extra": {
+		"prado": {
+			"error-messages": "config/errorMessages.txt",
+			"class-map": "config/classMap.json"
+		}
+	}
+}

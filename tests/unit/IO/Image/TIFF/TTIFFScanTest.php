@@ -1,0 +1,253 @@
+<?php
+
+use Prado\Exceptions\TInvalidDataTypeException;
+use Prado\Exceptions\TIOException;
+use Prado\IO\Image\Meta\TEXIF;
+use Prado\IO\Image\TIFF\TTIFFDataType;
+use Prado\IO\Image\TIFF\TTIFFDocument;
+use Prado\IO\Image\TIFF\TTIFFIfd;
+use Prado\IO\Image\TTIFF;
+use Prado\IO\Stream\TNoSeekStream;
+use Prado\IO\TStream;
+
+class TTIFFScanTest extends PHPUnit\Framework\TestCase
+{
+	/**
+	 * Builds a TIFF file: EXIF-style metadata, an IFD1 JPEG thumbnail, and a large
+	 * pixel strip the scanner must never read.
+	 * @param int $stripSize
+	 */
+	private function bigTiffBytes(int $stripSize = 4194304): string
+	{
+		$exif = new TEXIF();
+		$exif->setValueByName('Make', 'PradoCam');
+		$exif->setValueByName('Model', 'Scanner-1');
+		$exif->getExifIfd(true)->setTagValues(33434, TTIFFDataType::URational, [[1, 500]]);
+		$exif->getExifIfd(true)->setTagValues(TEXIF::MakerNoteTag, TTIFFDataType::Undefined, 'NOTE' . str_repeat("\xA5", 28));
+		$exif->setThumbnail("\xFF\xD8THUMBNAIL-JPEG-BYTES\xFF\xD9");
+
+		$ifd0 = $exif->getIfd0();
+		$ifd0->setTagValues(TTIFF::WidthTag, TTIFFDataType::ULong, [4000]);
+		$ifd0->setTagValues(TTIFF::HeightTag, TTIFFDataType::ULong, [3000]);
+		$offsets = $ifd0->setTagValues(273, TTIFFDataType::ULong, [0]);
+		$ifd0->setTagValues(279, TTIFFDataType::ULong, [$stripSize]);
+		$offsets->setExternalData([str_repeat("\x5A", $stripSize)]);
+
+		$exif->setSignature('');
+		return $exif->toBinary();
+	}
+
+	public function testScanFileReadsMetadataWithoutStrips()
+	{
+		$path = tempnam(sys_get_temp_dir(), 'tiffscan');
+		try {
+			file_put_contents($path, $this->bigTiffBytes());
+
+			$before = memory_get_usage();
+			$exif = TEXIF::scanFile($path);
+			$grown = memory_get_usage() - $before;
+
+			self::assertTrue($exif->getTiff()->getIsScanned());
+			self::assertSame('PradoCam', $exif->getMake());
+			self::assertSame('Scanner-1', $exif->getModel());
+			self::assertSame([[1, 500]], $exif->getExifIfd()->getTag(33434)->getValues());
+			self::assertSame("\xFF\xD8THUMBNAIL-JPEG-BYTES\xFF\xD9", $exif->getThumbnail());
+
+			// The strip offsets tag survives as metadata, but its 4 MB of pixel data
+			// was never read: no captured blocks, and far less than 4 MB allocated.
+			$stripTag = $exif->getIfd0()->getTag(273);
+			self::assertNotNull($stripTag);
+			self::assertNull($stripTag->getExternalData());
+			self::assertLessThan(1048576, $grown);
+
+			// The makernote pin still applies on the scanned form.
+			self::assertTrue($exif->getExifIfd()->getTag(TEXIF::MakerNoteTag)->getPreserveOffset());
+		} finally {
+			@unlink($path);
+		}
+	}
+
+	public function testScanStreamFromResourceAndOffsetBase()
+	{
+		$tiff = $this->bigTiffBytes(65536);
+
+		// Raw PHP resource in.
+		$resource = fopen('php://memory', 'w+b');
+		fwrite($resource, $tiff);
+		rewind($resource);
+		$scanned = TTIFFDocument::scanStream($resource);
+		self::assertSame('PradoCam', $scanned->getIfd(0)->getTagValue(271));
+		fclose($resource);
+
+		// A TIFF embedded at a nonzero position scans from the current position.
+		$stream = TStream::fromString('PREFIX-JUNK!' . $tiff);
+		$stream->seek(12);
+		$offsetScan = TTIFFDocument::scanStream($stream);
+		self::assertSame('Scanner-1', $offsetScan->getIfd(0)->getTagValue(272));
+		self::assertSame([], array_filter($offsetScan->getWarnings(), fn ($w) => !str_contains($w, 'scan cap')));
+	}
+
+	public function testScanRequiresSeekableStream()
+	{
+		$stream = new TNoSeekStream(TStream::fromString($this->bigTiffBytes(1024)));
+		try {
+			TTIFFDocument::scanStream($stream);
+			self::fail('scanStream accepted a non-seekable stream');
+		} catch (TIOException $e) {
+			self::assertSame('tiff_stream_unseekable', $e->getErrorCode());
+		}
+	}
+
+	public function testScanTagSizeCapSkipsOversizedValues()
+	{
+		$exif = new TEXIF();
+		$exif->setValueByName('Make', 'CapCam');
+		$exif->getIfd0()->setTagValues(700, TTIFFDataType::UByte, array_fill(0, 8192, 65));   // 8 KB XMP
+		$exif->setSignature('');
+		$stream = TStream::fromString($exif->toBinary());
+
+		$scanned = TTIFFDocument::scanStream($stream, null, 1024);
+		self::assertSame('CapCam', $scanned->getIfd(0)->getTagValue(271));
+		self::assertNull($scanned->getIfd(0)->getTag(700));
+		self::assertNotEmpty(array_filter($scanned->getWarnings(), fn ($w) => str_contains($w, 'scan cap')));
+	}
+
+	public function testScannedExifComposesMetadataOnlySegment()
+	{
+		$path = tempnam(sys_get_temp_dir(), 'tiffscan');
+		try {
+			file_put_contents($path, $this->bigTiffBytes(131072));
+			$exif = TEXIF::scanFile($path);
+			$exif->setValueByName('Artist', 'From A Scan');
+
+			$reparsed = TEXIF::fromSegment($exif->toSegment());
+			self::assertSame('PradoCam', $reparsed->getMake());
+			self::assertSame('From A Scan', $reparsed->getValueByName('Artist'));
+			self::assertSame("\xFF\xD8THUMBNAIL-JPEG-BYTES\xFF\xD9", $reparsed->getThumbnail());
+		} finally {
+			@unlink($path);
+		}
+	}
+
+	public function testScanMatchesFullParse()
+	{
+		// The scanned metadata equals the in-memory parse of the same file, tag for tag.
+		$bytes = $this->bigTiffBytes(32768);
+		$full = TTIFFDocument::fromString($bytes);
+		$scanned = TTIFFDocument::scanStream(TStream::fromString($bytes));
+
+		foreach ($full->getIfds() as $index => $ifd) {
+			$scannedIfd = $scanned->getIfd($index);
+			self::assertNotNull($scannedIfd);
+			self::assertSame(array_keys($ifd->getTags()), array_keys($scannedIfd->getTags()));
+			foreach ($ifd->getTags() as $id => $tag) {
+				$other = $scannedIfd->getTag($id);
+				self::assertSame($tag->getType(), $other->getType(), "tag $id type");
+				self::assertSame($tag->getValues(), $other->getValues(), "tag $id values");
+			}
+		}
+		$fullExif = $full->getIfd(0)->getTag(TTIFFDocument::ExifIfdTag)->getSubIfd();
+		$scanExif = $scanned->getIfd(0)->getTag(TTIFFDocument::ExifIfdTag)->getSubIfd();
+		self::assertSame(array_keys($fullExif->getTags()), array_keys($scanExif->getTags()));
+	}
+
+	public function testScanRejectsANonStreamSource()
+	{
+		foreach (['MM\x00\x2A', 42, null] as $source) {
+			try {
+				TTIFFDocument::scanStream($source);
+				self::fail('scanStream accepted ' . get_debug_type($source));
+			} catch (TInvalidDataTypeException $e) {
+				self::assertSame('streamio_source_invalid', $e->getErrorCode());
+			}
+		}
+	}
+
+	public function testScanReadsLittleEndian()
+	{
+		$doc = new TTIFFDocument();
+		$doc->setIsBigEndian(false);
+		$ifd = new TTIFFIfd();
+		$ifd->setTagValues(271, TTIFFDataType::Ascii, "LittleCam\0");
+		$ifd->setTagValues(256, TTIFFDataType::ULong, [1024]);
+		$doc->addIfd($ifd);
+		$bytes = $doc->toBinary();
+		self::assertSame('II', substr($bytes, 0, 2));
+
+		$scanned = TTIFFDocument::scanStream(TStream::fromString($bytes));
+		self::assertFalse($scanned->getIsBigEndian());
+		self::assertSame('LittleCam', $scanned->getIfd(0)->getTagValue(271));
+		self::assertSame(1024, $scanned->getIfd(0)->getTagValue(256));
+		self::assertSame([], $scanned->getWarnings());
+	}
+
+	public function testScanMalformedHeadersThrow()
+	{
+		$cases = [
+			'',                                    // nothing at all
+			'M',                                   // half a byte-order mark
+			"XX\x00\x2A\x00\x00\x00\x08",          // no MM/II
+			"MM\x00\x2B\x00\x00\x00\x08",          // wrong magic number
+			"MM\x00\x2A",                          // no first-IFD pointer
+		];
+		foreach ($cases as $bad) {
+			try {
+				TTIFFDocument::scanStream(TStream::fromString($bad));
+				self::fail('scanStream accepted ' . bin2hex($bad));
+			} catch (TIOException $e) {
+				self::assertSame('tiff_invalid', $e->getErrorCode());
+			}
+		}
+	}
+
+	public function testScanWarnsOnALoopingIfdChain()
+	{
+		// IFD0 at 8 chains to IFD1 at 26, whose next pointer loops back to IFD0.
+		$bytes = "MM\x00\x2A\x00\x00\x00\x08"
+			. "\x00\x01" . "\x01\x0F\x00\x02\x00\x00\x00\x04" . "abc\0" . "\x00\x00\x00\x1A"
+			. "\x00\x01" . "\x01\x10\x00\x02\x00\x00\x00\x04" . "def\0" . "\x00\x00\x00\x08";
+
+		$scanned = TTIFFDocument::scanStream(TStream::fromString($bytes));
+		self::assertCount(2, $scanned->getIfds());
+		self::assertSame('abc', $scanned->getIfd(0)->getTagValue(271));
+		self::assertSame('def', $scanned->getIfd(1)->getTagValue(272));
+		self::assertNotEmpty(array_filter($scanned->getWarnings(), fn ($w) => str_contains($w, 'loops back to offset 8')));
+	}
+
+	public function testScanWarnsOnAnIfdOutsideTheData()
+	{
+		// A header whose first-IFD pointer addresses the very end of the stream.
+		$scanned = TTIFFDocument::scanStream(TStream::fromString("MM\x00\x2A\x00\x00\x00\x08"));
+		self::assertSame([], $scanned->getIfds());
+		self::assertSame(['IFD offset 8 is outside the data'], $scanned->getWarnings());
+	}
+
+	public function testScanSkipsAnUnknownDataType()
+	{
+		$bytes = "MM\x00\x2A\x00\x00\x00\x08"
+			. "\x00\x02"
+			. "\x01\x0F\x00\x63\x00\x00\x00\x04\x00\x00\x00\x00"    // tag 271, data type 99
+			. "\x01\x10\x00\x02\x00\x00\x00\x04" . "def\0"
+			. "\x00\x00\x00\x00";
+
+		$scanned = TTIFFDocument::scanStream(TStream::fromString($bytes));
+		self::assertNull($scanned->getIfd(0)->getTag(271));
+		self::assertSame('def', $scanned->getIfd(0)->getTagValue(272));
+		self::assertSame(['tag 271 has unknown data type 99'], $scanned->getWarnings());
+	}
+
+	public function testScanSkipsAValueAreaPastTheEnd()
+	{
+		// A 32-byte Ascii value declared at offset 0xFF00, far beyond the stream.
+		$bytes = "MM\x00\x2A\x00\x00\x00\x08"
+			. "\x00\x02"
+			. "\x01\x0F\x00\x02\x00\x00\x00\x20\x00\x00\xFF\x00"
+			. "\x01\x10\x00\x02\x00\x00\x00\x04" . "def\0"
+			. "\x00\x00\x00\x00";
+
+		$scanned = TTIFFDocument::scanStream(TStream::fromString($bytes));
+		self::assertNull($scanned->getIfd(0)->getTag(271));
+		self::assertSame('def', $scanned->getIfd(0)->getTagValue(272));
+		self::assertSame(['tag 271 value at 65280 runs past the data'], $scanned->getWarnings());
+	}
+}

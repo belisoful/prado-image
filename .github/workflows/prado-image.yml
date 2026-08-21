@@ -1,0 +1,64 @@
+name: PRADO Image Extension
+on: [push, pull_request]
+jobs:
+  composerext:
+    name: Image (PHP ${{ matrix.php-versions }}${{ matrix.imagick && '' || ', no imagick' }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php-versions: ['8.1', '8.2', '8.3', '8.4']
+        imagick: [true]
+        include:
+          # ext-imagick is only "suggested", so one job proves the claim: on a GD-only
+          # install the suite must still pass, with the Imagick-path tests skipping
+          # cleanly rather than erroring.
+          - php-versions: '8.3'
+            imagick: false
+
+    defaults:
+      run:
+        working-directory: prado-image
+
+    steps:
+      - name: Checkout extension
+        uses: actions/checkout@v5
+        with:
+          path: prado-image
+
+      - name: Setup PHP, with composer and extensions
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-versions }}
+          extensions: ctype, dom, gd, iconv, ${{ matrix.imagick && 'imagick, ' || '' }}intl, json, mbstring, pcre, spl
+          tools: php-cs-fixer, phpstan, cs2pr
+
+      - name: Validate composer.json and composer.lock
+        run: composer validate --strict
+
+      - name: Validate code syntax using php-cs-fixer
+        run: php-cs-fixer fix -vvv --dry-run --using-cache=no --format=checkstyle | cs2pr
+
+      - name: Validate test syntax using php-cs-fixer
+        run: php-cs-fixer fix tests -vvv --dry-run --using-cache=no --format=checkstyle | cs2pr
+
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-php${{ matrix.php-versions }}-composer-${{ hashFiles('prado-image/composer.json') }}
+          restore-keys: ${{ runner.os }}-php${{ matrix.php-versions }}-composer-
+
+      - name: Install Composer dependencies
+        run: composer install --no-progress --prefer-dist --optimize-autoloader
+
+      - name: Validate code using phpstan
+        run: phpstan analyse --error-format=checkstyle | cs2pr
+
+      - name: Run Unit Tests
+        run: composer unittest
