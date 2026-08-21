@@ -38,6 +38,17 @@ vendor/bin/phpstan analyse --memory-limit=1G         # static analysis (level 4)
 composer unittest                                    # tests (phpunit --testsuite unit)
 ```
 
+Coverage is gated, not merely reported: `tests/test_tools/coverage-gate.php` reads a clover
+report and requires **every** source file to be fully covered except the four whose remaining
+lines are unreachable from a test (counted, not line-numbered, so edits above them do not
+break the gate; the reasons are in AGENTS.md). CI runs it on the jobs that load **both** GD
+and ImageMagick, since the GD-only job cannot reach the Imagick backend:
+
+```sh
+XDEBUG_MODE=coverage vendor/bin/phpunit --testsuite unit --coverage-clover build/logs/clover.xml
+php tests/test_tools/coverage-gate.php build/logs/clover.xml
+```
+
 PHPStan runs at **level 4**, which is the level that detects branches whose condition can never
 flip — dead code that full line coverage cannot reveal. The `ignoreErrors` entries in
 `phpstan.neon.dist` are deliberate runtime guards, each with a comment saying why it stays;

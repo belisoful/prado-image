@@ -729,25 +729,20 @@ class TICCProfileTest extends PHPUnit\Framework\TestCase
 		self::assertSame("sign \u{1F4F7}", TICCProfile::parse($profile->toBinary())->getCopyright());
 	}
 
-	public function testTextDescriptionWithoutAWorkingRegularExpression()
+	public function testTextDescriptionFallsBackToTheByteWisePattern()
 	{
-		// The ASCII projection of a version 2 'desc' is a preg_replace; when PCRE cannot
-		// run at all (here, an exhausted backtrack limit), the description degrades to
-		// empty instead of writing a null into the tag.
+		// The ASCII projection of a version 2 'desc' replaces one *character* at a time,
+		// which needs a UTF-8 subject; text that is not valid UTF-8 makes that pattern
+		// fail, and the byte-wise pattern behind it still produces a storable string.
 		$profile = TICCProfile::parse(ICCProfileBuilder::sRgb());
-		$limit = ini_get('pcre.backtrack_limit');
-		try {
-			ini_set('pcre.backtrack_limit', '0');
-			$profile->setDescription("Caf\u{00E9} description");
-		} finally {
-			ini_set('pcre.backtrack_limit', $limit);
-		}
+		$profile->setDescription("Caf\xE9 description");   // latin-1 e-acute: invalid UTF-8
 
 		self::assertSame('desc', $profile->getTagType('desc'));
-		self::assertSame('', $profile->getDescription());
-		self::assertSame('', TICCProfile::parse($profile->toBinary())->getDescription());
+		self::assertSame('Caf? description', $profile->getDescription());
+		self::assertSame('Caf? description', TICCProfile::parse($profile->toBinary())->getDescription());
 
-		// With PCRE working again the same text is stored, non-ASCII projected to '?'.
+		// Valid UTF-8 takes the per-character pattern: one '?' for the one non-ASCII
+		// character, not one per byte of its two-byte encoding.
 		$profile->setDescription("Caf\u{00E9} description");
 		self::assertSame('Caf? description', TICCProfile::parse($profile->toBinary())->getDescription());
 	}

@@ -1502,10 +1502,22 @@ class TEXIFTags
 			return trim(rtrim($text, "\0"));
 		}
 		if (str_starts_with($signature, 'UNICODE')) {
-			$decoded = @iconv('UTF-16', 'UTF-8//IGNORE', $text);
-			if ($decoded === false) {
-				$decoded = @iconv('UTF-16BE', 'UTF-8//IGNORE', $text);
+			// Exif gives the comment no charset of its own: it is UTF-16, and a bare
+			// 'UTF-16' conversion guesses the byte order differently per platform
+			// (libiconv reads big-endian, glibc little-endian), so the order is always
+			// named here -- from the byte-order mark when a writer left one, and
+			// otherwise big-endian: the Unicode default for an unmarked UTF-16 stream,
+			// and what {@see encodeCodedString()} writes.
+			$charset = 'UTF-16BE';
+			if (str_starts_with($text, "\xFF\xFE")) {
+				$charset = 'UTF-16LE';
+				$text = substr($text, 2);
+			} elseif (str_starts_with($text, "\xFE\xFF")) {
+				$text = substr($text, 2);
 			}
+			// A payload truncated mid-character cannot be decoded at all: iconv answers
+			// false and the cast leaves nothing, which is the documented behaviour.
+			$decoded = @iconv($charset, 'UTF-8//IGNORE', $text);
 			return trim(rtrim((string) $decoded, "\0"));
 		}
 		if (str_starts_with($signature, 'JIS')) {

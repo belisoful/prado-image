@@ -18,6 +18,27 @@ class TEXIFInterpretTest extends PHPUnit\Framework\TestCase
 		self::assertStringContainsString('raw text', (string) TEXIFTags::textValue($unknown, TEXIFTags::EXIF));
 	}
 
+	public function testCodedStringUnicodeByteOrderIsNamedNotGuessed()
+	{
+		// 'UTF-16' without a byte-order mark is big-endian by the Unicode default, and
+		// that is what encodeCodedString() writes -- but iconv's bare 'UTF-16' resolves
+		// the default per platform (libiconv big-endian, glibc little-endian), so an
+		// unmarked comment must decode the same way everywhere.
+		$text = 'Ünïcode ✓';
+		$be = new TTIFFTag(37510, TTIFFDataType::Undefined, "UNICODE\0" . mb_convert_encoding($text, 'UTF-16BE', 'UTF-8'));
+		self::assertSame($text, TEXIFTags::textValue($be, TEXIFTags::EXIF));
+
+		// A writer that left a mark is believed, in either order.
+		$markedBe = new TTIFFTag(37510, TTIFFDataType::Undefined, "UNICODE\0" . "\xFE\xFF" . mb_convert_encoding($text, 'UTF-16BE', 'UTF-8'));
+		self::assertSame($text, TEXIFTags::textValue($markedBe, TEXIFTags::EXIF));
+
+		$markedLe = new TTIFFTag(37510, TTIFFDataType::Undefined, "UNICODE\0" . "\xFF\xFE" . mb_convert_encoding($text, 'UTF-16LE', 'UTF-8'));
+		self::assertSame($text, TEXIFTags::textValue($markedLe, TEXIFTags::EXIF));
+
+		// The round trip through this library's own writer holds.
+		self::assertSame($text, TEXIFTags::decodeCodedString(TEXIFTags::encodeCodedString($text, 'UNICODE')));
+	}
+
 	public function testComponentsConfiguration()
 	{
 		$tag = new TTIFFTag(37121, TTIFFDataType::Undefined, "\x01\x02\x03\x00");
