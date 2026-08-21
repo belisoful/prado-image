@@ -114,6 +114,12 @@
 - Test images are generated in memory with `ext-gd` (imagejpeg/imagepng/imagewebp); do not commit binary image fixtures.
 - Imagick-path tests must `markTestSkipped` when `ext-imagick` is not loaded; never hard-fail on a missing optional extension.
 - When unit testing one or cluster of classes, only run the unit tests for that class or cluster/directory.
+- Coverage drivers disagree about which line an `else` belongs to. Xdebug on PHP 8.1 has
+  been observed marking an `else` body executed when only the `if` branch ran (measured in
+  `TICCProfile::utf16BeToUtf8()`), while CI's pcov on 8.2+ reports it correctly — so a local
+  100% can hide a branch no test drives. The gate in CI is the authority; when a line is
+  reported uncovered there but covered locally, believe CI and write the test that actually
+  exercises the branch. Do not chase it by weakening the gate.
 - Line coverage of `src` is **99.92%** and is expected to stay there: a change that adds
   an uncovered line is a change that needs a test.  Exactly five lines are knowingly
   unreachable from a test, and each is unreachable for a stated reason — do not "cover"

@@ -2,7 +2,7 @@ name: PRADO Image Extension
 on: [push, pull_request]
 jobs:
   composerext:
-    name: Image (PHP ${{ matrix.php-versions }}${{ matrix.imagick && '' || ', no imagick' }})
+    name: Image (PHP ${{ matrix.php-versions }}${{ matrix.imagick && ', GD + ImageMagick' || ', GD only' }})
     runs-on: ubuntu-latest
 
     strategy:

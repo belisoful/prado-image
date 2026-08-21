@@ -705,6 +705,21 @@ class TICCProfileTest extends PHPUnit\Framework\TestCase
 			TICCProfile::parse(ICCProfileBuilder::build(['desc' => $trailing]))->getDescription(),
 		);
 
+		// A high surrogate that *is* followed by another unit, but not by the low
+		// surrogate it needs: the pair is abandoned and the following character is kept.
+		$unpaired = 'mluc' . "\0\0\0\0" . pack('N2', 1, 12) . 'enUS' . pack('N2', 4, 28) . "\xD8\x3D\x00\x41";
+		self::assertSame(
+			"\u{FFFD}A",
+			TICCProfile::parse(ICCProfileBuilder::build(['desc' => $unpaired]))->getDescription(),
+		);
+
+		// Two high surrogates in a row: the first is replaced, the second re-examined.
+		$doubled = 'mluc' . "\0\0\0\0" . pack('N2', 1, 12) . 'enUS' . pack('N2', 6, 28) . "\xD8\x3D\xD8\x3D\x00\x41";
+		self::assertSame(
+			"\u{FFFD}\u{FFFD}A",
+			TICCProfile::parse(ICCProfileBuilder::build(['desc' => $doubled]))->getDescription(),
+		);
+
 		// And text that is not valid UTF-8 is encoded as replacement characters rather
 		// than rejected: a stray byte, a truncated sequence, a broken continuation, an
 		// encoded surrogate, and a code point above the Unicode range.
