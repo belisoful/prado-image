@@ -293,6 +293,34 @@ class TICCTransformTest extends PHPUnit\Framework\TestCase
 		self::assertSame(0.125, $evaluator::evaluateCurve(['type' => 'table', 'samples' => [0.0, 0.5]], 0.25));
 	}
 
+	public function testDeviceValuesOutsideTheUnitRangeClampToTheEndpoints()
+	{
+		// The curve tables sample the device range, so a caller building a description
+		// itself is the only way past the ends -- and there the evaluator must answer the
+		// endpoints. Neither result is reachable without the clamp: a negative raised to
+		// a fractional power is not a number, a value past white overshoots it, and a
+		// sampled table would index outside its own samples.
+		$evaluator = new class () extends TICCTransform {
+			public static function evaluateCurve(array $curve, float $x): float
+			{
+				return static::evaluate($curve, $x);
+			}
+		};
+		$gamma = ['type' => 'gamma', 'gamma' => 2.2];
+		self::assertNan((-0.5) ** 2.2);
+		self::assertSame(0.0, $evaluator::evaluateCurve($gamma, -0.5));
+		self::assertGreaterThan(1.0, 1.5 ** 2.2);
+		self::assertSame(1.0, $evaluator::evaluateCurve($gamma, 1.5));
+
+		$table = ['type' => 'table', 'samples' => [0.0, 0.5, 1.0]];
+		self::assertSame(0.0, $evaluator::evaluateCurve($table, -2.0));
+		self::assertSame(1.0, $evaluator::evaluateCurve($table, 4.0));
+
+		$identity = ['type' => 'identity'];
+		self::assertSame(0.0, $evaluator::evaluateCurve($identity, -1.0));
+		self::assertSame(1.0, $evaluator::evaluateCurve($identity, 2.0));
+	}
+
 	public function testEmptyAndPartialPixelData()
 	{
 		$transform = TICCTransform::between($this->sRgb(), $this->wide());

@@ -52,6 +52,18 @@ class TPhotoshopIRBTest extends PHPUnit\Framework\TestCase
 		self::assertFalse($reparsed->getResource(TPhotoshopResource::IptcNaa) !== null);
 	}
 
+	public function testGetIptcAnswersNullForAnUnparsableResource()
+	{
+		$irb = new TPhotoshopIRB();
+		$irb->setResource(new TPhotoshopResource(TPhotoshopResource::IptcNaa, 'not an IIM dataset'));
+
+		// The resource is there but its bytes are not IPTC, so nothing is returned ...
+		self::assertNull($irb->getIPTC());
+		// ... and the resource itself is left exactly as it was found.
+		self::assertSame('not an IIM dataset', $irb->getResource(TPhotoshopResource::IptcNaa)->getData());
+		self::assertCount(1, $irb);
+	}
+
 	public function testDecoders()
 	{
 		$resolution = new TPhotoshopResource(

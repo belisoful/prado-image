@@ -25,6 +25,24 @@ class TGIFLZWCompressorTest extends PHPUnit\Framework\TestCase
 		self::assertSame('', TGIFLZWCompressor::decompress(TGIFLZWCompressor::compress('', 8), 8));
 	}
 
+	public function testEmptyDataEndingOnAByteBoundaryPadsNothing()
+	{
+		// Empty data is Clear then EOI and nothing else, so the output is only as long as
+		// those two codes: at minimum code size 3 they are two four-bit codes (8 then 9,
+		// least-significant-bit first) filling exactly one byte, with no partial byte to
+		// flush behind them.
+		self::assertSame("\x98", TGIFLZWCompressor::compress('', 3));
+		self::assertSame('', TGIFLZWCompressor::decompress("\x98", 3));
+
+		// The same at minimum code size 7, where the two codes are whole bytes each.
+		self::assertSame("\x80\x81", TGIFLZWCompressor::compress('', 7));
+		self::assertSame('', TGIFLZWCompressor::decompress("\x80\x81", 7));
+
+		// A code size whose two codes do not fill whole bytes still flushes the remainder:
+		// at 2, Clear (4) and EOI (5) are six bits and the output is a padded byte longer.
+		self::assertSame("\x2C", TGIFLZWCompressor::compress('', 2));
+	}
+
 	public function testRoundTripsAcrossWidthsAndClearsPerMinCodeSize()
 	{
 		foreach ([2, 3, 4, 8] as $mcs) {

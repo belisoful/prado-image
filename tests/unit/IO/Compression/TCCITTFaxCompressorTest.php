@@ -228,6 +228,47 @@ class TCCITTFaxCompressorTest extends PHPUnit\Framework\TestCase
 		self::assertSame('', $codec->decode("\x20"));
 	}
 
+	public function testTruncatedOneDimensionalRowKeepsItsDecodedRuns()
+	{
+		// The white run 30 (00000011) is a whole code word, and the data ends inside the black
+		// run behind it: the row keeps the run it did decode and the rest of the row is the
+		// colour that run left, rather than the whole row being dropped.
+		$codec = new TCCITTFaxCompressor(64, TCCITTFaxCompressor::ModifiedHuffman);
+		$expected = $this->packBits([str_repeat('0', 30) . str_repeat('1', 34)]);
+		self::assertSame(bin2hex($expected), bin2hex($codec->decode("\x03")));
+	}
+
+	public function testTruncatedTwoDimensionalRowKeepsItsDecodedChanges()
+	{
+		// VL1 (010) places the row's single change one pixel left of the reference edge, then
+		// the data runs out mid-row: the change already read is kept as the row.
+		$codec = new TCCITTFaxCompressor(64, TCCITTFaxCompressor::Group4);
+		$expected = $this->packBits([str_repeat('0', 63) . '1']);
+		self::assertSame(bin2hex($expected), bin2hex($codec->decode("\x40")));
+	}
+
+	public function testTwoDimensionalRowEndingOnAnEolKeepsItsChanges()
+	{
+		// VL1 (010), an EOL (000000000001), then a second VL1: the EOL ends the first row at
+		// the change it had read instead of discarding it, and decoding carries on into the
+		// next row, which codes its own change against the first row as its reference.
+		$codec = new TCCITTFaxCompressor(64, TCCITTFaxCompressor::Group4);
+		$expected = $this->packBits([
+			str_repeat('0', 63) . '1',
+			str_repeat('0', 62) . '11',
+		]);
+		self::assertSame(bin2hex($expected), bin2hex($codec->decode("\x40\x02\x80")));
+	}
+
+	public function testTruncatedHorizontalRunKeepsEarlierChanges()
+	{
+		// VL1 (010) then a horizontal code (001) whose two runs are missing: the row keeps the
+		// change the vertical mode had already placed.
+		$codec = new TCCITTFaxCompressor(64, TCCITTFaxCompressor::Group4);
+		$expected = $this->packBits([str_repeat('0', 63) . '1']);
+		self::assertSame(bin2hex($expected), bin2hex($codec->decode("\x44")));
+	}
+
 	public function testUnknownTwoDimensionalModeCodeThrows()
 	{
 		// Twelve zero bits are neither a mode code nor the EOL (000000000001).

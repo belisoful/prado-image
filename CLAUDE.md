@@ -49,6 +49,17 @@ XDEBUG_MODE=coverage vendor/bin/phpunit --testsuite unit --coverage-clover build
 php tests/test_tools/coverage-gate.php build/logs/clover.xml
 ```
 
+Branch coverage is gated separately and more deeply: `tests/test_tools/branch-gate.php` reads a
+`--path-coverage` report and requires every branch to be taken except the documented unreachable
+edges. It runs nightly (`.github/workflows/branch-coverage.yml`), not per push, because
+instrumenting every branch is far slower than the suite:
+
+```sh
+XDEBUG_MODE=coverage php -d memory_limit=10G vendor/bin/phpunit --testsuite unit \
+    --path-coverage --coverage-php build/logs/coverage.php
+php -d memory_limit=8G tests/test_tools/branch-gate.php build/logs/coverage.php
+```
+
 PHPStan runs at **level 4**, which is the level that detects branches whose condition can never
 flip — dead code that full line coverage cannot reveal. The `ignoreErrors` entries in
 `phpstan.neon.dist` are deliberate runtime guards, each with a comment saying why it stays;

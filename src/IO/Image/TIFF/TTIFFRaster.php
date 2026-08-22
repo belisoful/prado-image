@@ -128,6 +128,7 @@ class TTIFFRaster
 			'samples' => $samples,
 			'planar' => $planar,
 			'fillOrder' => (int) ($ifd->getTagValue(266) ?? 1),
+			't4options' => (int) ($ifd->getTagValue(292) ?? 0),
 			'predictor' => (int) ($ifd->getTagValue(317) ?? 1),
 			'rowsPerStrip' => (int) ($ifd->getTagValue(278) ?? $height),
 			'tileWidth' => (int) ($ifd->getTagValue(322) ?? 0),

@@ -56,7 +56,7 @@ class THorizontalPredictorTest extends PHPUnit\Framework\TestCase
 	public function testRandomRoundTrips()
 	{
 		foreach ([[64, 1], [64, 3], [17, 4]] as [$columns, $samples]) {
-			$raw = random_bytes($columns * $samples * 20 + 5);   // 20 rows and a partial
+			$raw = PseudoRandomBytes::bytes($columns * $samples * 20 + 5, 'predictor-1');   // 20 rows and a partial
 			$encoded = THorizontalPredictor::encode($raw, $columns, $samples);
 			self::assertSame($raw, THorizontalPredictor::decode($encoded, $columns, $samples), "columns={$columns} samples={$samples}");
 		}
@@ -114,7 +114,7 @@ class THorizontalPredictorTest extends PHPUnit\Framework\TestCase
 	{
 		$columns = 31;
 		$samples = 3;
-		$raw = random_bytes($columns * $samples * 15 + 7);   // 15 rows and a partial tail
+		$raw = PseudoRandomBytes::bytes($columns * $samples * 15 + 7, 'predictor-2');   // 15 rows and a partial tail
 		$expected = THorizontalPredictor::encode($raw, $columns, $samples);
 		foreach ([1, 7, 64, 8192] as $chunk) {
 			$encoded = $this->runFilter(THorizontalPredictorFilter::EncodeName, $raw, $chunk, ['columns' => $columns, 'samples' => $samples]);
@@ -126,7 +126,7 @@ class THorizontalPredictorTest extends PHPUnit\Framework\TestCase
 
 	public function testFilterSamplesDefaultsToOne()
 	{
-		$raw = random_bytes(64 * 10);
+		$raw = PseudoRandomBytes::bytes(64 * 10, 'predictor-3');
 		$expected = THorizontalPredictor::encode($raw, 64, 1);
 		self::assertSame($expected, $this->runFilter(THorizontalPredictorFilter::EncodeName, $raw, 128, ['columns' => 64]));
 	}
@@ -136,6 +136,16 @@ class THorizontalPredictorTest extends PHPUnit\Framework\TestCase
 		$h = fopen('php://temp', 'r+b');
 		$filter = @stream_filter_append($h, THorizontalPredictorFilter::EncodeName, STREAM_FILTER_READ, []);
 		self::assertFalse($filter, 'A filter without columns fails to attach.');
+		fclose($h);
+	}
+
+	public function testFilterRejectsNonArrayParameters()
+	{
+		// The geometry arrives as an array of named values; a bare number is not read as a
+		// column count, so the filter has no geometry and refuses to attach.
+		$h = fopen('php://temp', 'r+b');
+		$filter = @stream_filter_append($h, THorizontalPredictorFilter::EncodeName, STREAM_FILTER_READ, 64);
+		self::assertFalse($filter, 'A scalar parameter is not a row geometry.');
 		fclose($h);
 	}
 
@@ -150,7 +160,7 @@ class THorizontalPredictorTest extends PHPUnit\Framework\TestCase
 		THorizontalPredictorFilter::registerOnce(THorizontalPredictorFilter::DecodeName);
 		self::assertTrue(THorizontalPredictorFilter::isRegistered(THorizontalPredictorFilter::DecodeName));
 
-		$raw = random_bytes(16 * 3 * 4);
+		$raw = PseudoRandomBytes::bytes(16 * 3 * 4, 'predictor-4');
 		$encoded = THorizontalPredictor::encode($raw, 16, 3);
 		self::assertSame($raw, $this->runFilter(THorizontalPredictorFilter::DecodeName, $encoded, 64, ['columns' => 16, 'samples' => 3]), 'The individually registered name filters.');
 	}
@@ -159,7 +169,7 @@ class THorizontalPredictorTest extends PHPUnit\Framework\TestCase
 	{
 		// Less than one row arrives, so no chunk completes a row and everything transforms in
 		// the closing flush; the result still matches the codec's partial-row handling.
-		$raw = random_bytes(10);
+		$raw = PseudoRandomBytes::bytes(10, 'predictor-5');
 		$expected = THorizontalPredictor::encode($raw, 100, 1);
 		self::assertSame($expected, $this->runFilter(THorizontalPredictorFilter::EncodeName, $raw, 8192, ['columns' => 100]));
 		self::assertSame($raw, $this->runFilter(THorizontalPredictorFilter::DecodeName, $expected, 8192, ['columns' => 100]));

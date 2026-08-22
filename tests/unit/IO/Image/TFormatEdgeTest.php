@@ -7,6 +7,7 @@ use Prado\IO\Image\Meta\TIPTCTags;
 use Prado\IO\Image\Meta\TJFIF;
 use Prado\IO\Image\Meta\TJFXX;
 use Prado\IO\Image\Meta\TPictureInfo;
+use Prado\IO\Image\Meta\TXMP;
 use Prado\IO\Image\TIFF\TTIFFDataType;
 use Prado\IO\Image\TJPEG;
 use Prado\IO\Image\TPNG;
@@ -373,6 +374,49 @@ class TFormatEdgeTest extends PHPUnit\Framework\TestCase
 		self::assertSame(2, $webp->clearPrivateData(TPrivacyCategory::Author | TPrivacyCategory::Location));
 		self::assertFalse($iptc->contains(TIPTCTags::ByLine));
 		self::assertFalse($iptc->contains(TIPTCTags::City));
+	}
+
+	public function testWebpEmptyIccChunkReadsAsNoProfile()
+	{
+		// An ICCP chunk that is present but carries no bytes is not a profile: the
+		// accessor answers null rather than an empty string, while the chunk itself
+		// round-trips untouched.
+		$vp8x = "\x20\x00\x00\x00" . substr(pack('V', 31), 0, 3) . substr(pack('V', 23), 0, 3);
+		$bytes = $this->riffContainer('WEBP', [
+			['VP8X', $vp8x],
+			['ICCP', ''],
+			['VP8L', "\x2f" . pack('V', 31 | (23 << 14))],
+		]);
+		$webp = TWebP::fromString($bytes);
+
+		self::assertNotNull($webp->getRIFF()->getChunk(TRIFFChunkType::ICCProfile));
+		self::assertSame('', $webp->getRIFF()->getChunk(TRIFFChunkType::ICCProfile)->getData());
+		self::assertNull($webp->getICCProfile());
+		self::assertFalse($webp->hasICCProfile());
+		self::assertSame(32, $webp->getWidth());
+		self::assertSame(bin2hex($bytes), bin2hex($webp->toBinary()));
+
+		// A chunk with bytes in it answers them.
+		$webp->setICCProfile('ICC-PROFILE-BYTES');
+		self::assertSame('ICC-PROFILE-BYTES', $webp->getICCProfile());
+		self::assertTrue($webp->hasICCProfile());
+	}
+
+	public function testWebpUnparsableXmpReadsAsNoXmpButIsKeptVerbatim()
+	{
+		$text = '<x:xmpmeta>truncated';
+		$webp = TWebP::fromString($this->webpBytes());
+		$webp->setXmpText($text);
+
+		$reloaded = TWebP::fromString($webp->toBinary());
+		self::assertSame($text, $reloaded->getXmpText());   // the chunk survives...
+		self::assertNull($reloaded->getXMP());              // ...but there is no DOM to answer
+
+		// A packet that does parse answers the DOM from the same accessor.
+		$xmp = TXMP::blank();
+		$xmp->setProperty(TXMP::NS_DC, 'title', 'Readable');
+		$reloaded->setXMP($xmp);
+		self::assertSame(['Readable'], $reloaded->getXMP()?->getProperty(TXMP::NS_DC, 'title'));
 	}
 }
 

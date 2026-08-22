@@ -1,10 +1,13 @@
 <?php
 
+use Prado\IO\Image\Meta\JUMBF\TJUMBFBox;
 use Prado\IO\Image\Meta\TEXIF;
 use Prado\IO\Image\Meta\TIPTCTags;
 use Prado\IO\Image\Meta\TJFIF;
 use Prado\IO\Image\Meta\TJFXX;
+use Prado\IO\Image\Meta\TPictureInfo;
 use Prado\IO\Image\Meta\TXMP;
+use Prado\IO\Image\TIFF\TTIFFDataType;
 use Prado\IO\Image\TJPEG;
 use Prado\IO\Image\TPhotoshop8BIM;
 
@@ -265,5 +268,177 @@ class TJPEGSegmentsTest extends PHPUnit\Framework\TestCase
 		self::assertSame(150, $reloaded->getJFIF()->getXDensity());
 		self::assertSame(TJFIF::UNITS_PPI, $reloaded->getJFIF()->getUnits());
 		self::assertSame(24, $reloaded->getWidth());
+	}
+
+	public function testUnparsableXmpPacketReadsAsNoXmpButIsKeptVerbatim()
+	{
+		// The APP1 is XMP-signed, but the packet behind the identifier is not XML.
+		$text = '<x:xmpmeta>truncated';
+		$bytes = $this->minimalJpeg($this->segment(TJPEG::APP1, TJPEG::XMP_IDENTIFIER . $text));
+		$jpeg = TJPEG::fromString($bytes);
+
+		self::assertSame($text, $jpeg->getXmpText());   // the raw text is still there...
+		self::assertNull($jpeg->getXMP());              // ...but there is no DOM to answer
+		self::assertSame(bin2hex($bytes), bin2hex($jpeg->toBinary()));
+
+		// A packet that does parse answers the DOM from the same accessor.
+		$xmp = TXMP::blank();
+		$xmp->setProperty(TXMP::NS_DC, 'title', 'Readable');
+		$jpeg->setXmpText($xmp->toPacketText(false));
+		self::assertSame(['Readable'], $jpeg->getXMP()?->getProperty(TXMP::NS_DC, 'title'));
+	}
+
+	public function testExtendedXmpMergedWhenTheMainPacketNamesNoDigest()
+	{
+		// The main packet carries no xmpNote:HasExtendedXMP, so the only reassembled
+		// packet is taken as the extension rather than being dropped for want of a name.
+		$main = TXMP::blank();
+		$main->setProperty(TXMP::NS_DC, 'title', 'Main Title');
+		$extended = TXMP::blank();
+		$extended->setProperty(TXMP::NS_DC, 'description', 'From The Extension');
+		$text = $extended->toPacketText(false);
+		$chunk = TJPEG::XMP_EXTENSION_IDENTIFIER . strtoupper(md5($text))
+			. pack('N', strlen($text)) . pack('N', 0) . $text;
+
+		$jpeg = TJPEG::fromString($this->minimalJpeg(
+			$this->segment(TJPEG::APP1, TJPEG::XMP_IDENTIFIER . $main->toPacketText(false))
+			. $this->segment(TJPEG::APP1, $chunk),
+		));
+		self::assertSame(['Main Title'], $jpeg->getXMP()?->getProperty(TXMP::NS_DC, 'title'));
+		self::assertSame(['From The Extension'], $jpeg->getXMP()?->getProperty(TXMP::NS_DC, 'description'));
+	}
+
+	public function testExtendedXmpPrefersThePacketTheMainOneNames()
+	{
+		// Two complete extension packets arrive; the digest in xmpNote:HasExtendedXMP
+		// picks the second one although the first is the earlier segment.
+		$packet = function (string $description): array {
+			$xmp = TXMP::blank();
+			$xmp->setProperty(TXMP::NS_DC, 'description', $description);
+			$text = $xmp->toPacketText(false);
+			return [strtoupper(md5($text)), $text];
+		};
+		[$otherDigest, $otherText] = $packet('Other Packet');
+		[$namedDigest, $namedText] = $packet('Named Packet');
+		$chunk = fn (string $digest, string $text): string => TJPEG::XMP_EXTENSION_IDENTIFIER
+			. $digest . pack('N', strlen($text)) . pack('N', 0) . $text;
+
+		$main = TXMP::blank();
+		$main->setProperty(TXMP::NS_NOTE, 'HasExtendedXMP', $namedDigest);
+		$jpeg = TJPEG::fromString($this->minimalJpeg(
+			$this->segment(TJPEG::APP1, TJPEG::XMP_IDENTIFIER . $main->toPacketText(false))
+			. $this->segment(TJPEG::APP1, $chunk($otherDigest, $otherText))
+			. $this->segment(TJPEG::APP1, $chunk($namedDigest, $namedText)),
+		));
+		self::assertSame(['Named Packet'], $jpeg->getXMP()?->getProperty(TXMP::NS_DC, 'description'));
+		self::assertNull($jpeg->getXMP()?->getProperty(TXMP::NS_NOTE, 'HasExtendedXMP'));
+	}
+
+	public function testEmptyJumbfBoxEmitsOneHeaderOnlySegment()
+	{
+		// A box with no payload still has to be written: one APP11 carrying the eight
+		// header bytes and nothing else.
+		$jpeg = TJPEG::fromString($this->minimalJpeg());
+		$jpeg->setJumbfBoxes([new TJUMBFBox('json', '')]);
+
+		$expected = $this->minimalJpeg($this->segment(
+			TJPEG::APP11,
+			TJPEG::JUMBF_IDENTIFIER . pack('n', 1) . pack('N', 1) . pack('N', 8) . 'json',
+		));
+		self::assertSame(bin2hex($expected), bin2hex($jpeg->toBinary()));
+
+		$reloaded = TJPEG::fromString($jpeg->toBinary());
+		self::assertCount(1, $reloaded->getJumbfBoxes());
+		self::assertSame('json', $reloaded->getJumbfBoxes()[0]->getType());
+		self::assertSame('', $reloaded->getJumbfBoxes()[0]->getPayload());
+	}
+
+	public function testTruncatedJfifSegmentIsUnparsableAndDropped()
+	{
+		// The APP0 carries the JFIF identifier but stops before the density fields.
+		$bytes = $this->minimalJpeg($this->segment(TJPEG::APP0, TJFIF::IDENTIFIER . "\x01\x01\x00"));
+		$jpeg = TJPEG::fromString($bytes);
+		self::assertNull($jpeg->getJFIF());
+		self::assertSame('jfif', $jpeg->getSegments()[0]['kind']);
+
+		// The kind stays in the list, but there is no JFIF left to write for it.
+		self::assertSame(bin2hex($this->minimalJpeg()), bin2hex($jpeg->toBinary()));
+
+		// A complete APP0 is re-emitted from the parsed object.
+		$intact = TJPEG::fromString($this->jpegBytes());
+		self::assertNotNull($intact->getJFIF());
+		self::assertStringContainsString(TJFIF::IDENTIFIER, $intact->toBinary());
+	}
+
+	public function testTruncatedJfxxSegmentIsUnparsableAndDropped()
+	{
+		// The APP0 carries the JFXX identifier and not one byte more.
+		$bytes = $this->minimalJpeg($this->segment(TJPEG::APP0, TJFXX::IDENTIFIER));
+		$jpeg = TJPEG::fromString($bytes);
+		self::assertNull($jpeg->getJFXX());
+		self::assertSame('jfxx', $jpeg->getSegments()[0]['kind']);
+		self::assertSame(bin2hex($this->minimalJpeg()), bin2hex($jpeg->toBinary()));
+	}
+
+	public function testMalformedLegacyIptcSegmentIsUnparsableAndDropped()
+	{
+		// A Photoshop 2.5 IPTC resource whose payload does not start with the IIM tag
+		// marker: the block is recognized, the records behind it are not.
+		$payload = str_replace(
+			"Photoshop 3.0\x00",
+			"Photoshop 2.5\x00",
+			TPhotoshop8BIM::iptcEncode("\x00\x00\x00\x00"),
+		);
+		$bytes = $this->minimalJpeg($this->segment(TJPEG::APP13, $payload));
+		$jpeg = TJPEG::fromString($bytes);
+
+		self::assertNull($jpeg->getIPTC());
+		self::assertFalse($jpeg->hasIPTC());
+		self::assertSame('iptc', $jpeg->getSegments()[0]['kind']);
+		self::assertSame(bin2hex($this->minimalJpeg()), bin2hex($jpeg->toBinary()));
+	}
+
+	public function testKodakMetaSegmentIsRewrittenAndDroppable()
+	{
+		$meta = new TEXIF();
+		$meta->setSignature(TEXIF::MetaSignature);
+		$meta->getIfd0(true)->setTagValues(0x010E, TTIFFDataType::Ascii, "Kodak Meta\0");
+		$jpeg = TJPEG::fromString($this->minimalJpeg($this->segment(TJPEG::APP3, $meta->toBinary())));
+
+		self::assertNotNull($jpeg->getMeta());
+		self::assertSame('meta', $jpeg->getSegments()[0]['kind']);
+
+		// Written back from the live object...
+		$rewritten = TJPEG::fromString($jpeg->toBinary());
+		self::assertSame('Kodak Meta', $rewritten->getMeta()?->getIfd0()?->getTagValue(0x010E));
+
+		// ...and the APP3 disappears once the Meta block is dropped.
+		$rewritten->setMeta(null);
+		$out = $rewritten->toBinary();
+		self::assertStringNotContainsString(TEXIF::MetaSignature, $out);
+		self::assertSame(bin2hex($this->minimalJpeg()), bin2hex($out));
+		self::assertNull(TJPEG::fromString($out)->getMeta());
+	}
+
+	public function testPictureInfoSegmentIsRewrittenAndDroppable()
+	{
+		$info = new TPictureInfo();
+		$info->setHeader('[picture info]');
+		$info->setText("\r\nResolution=1024x768\r\n[end]");
+		$payload = $info->toBinary();
+		$jpeg = TJPEG::fromString($this->minimalJpeg($this->segment(TJPEG::APP12, $payload)));
+
+		self::assertSame(['Resolution' => '1024x768'], $jpeg->getPictureInfo()?->getFields());
+		self::assertSame('pictureinfo', $jpeg->getSegments()[0]['kind']);
+
+		// The APP12 is regenerated from the parsed object, byte for byte...
+		self::assertSame(
+			bin2hex($this->minimalJpeg($this->segment(TJPEG::APP12, $payload))),
+			bin2hex($jpeg->toBinary()),
+		);
+
+		// ...and vanishes when the picture info is dropped.
+		$jpeg->setPictureInfo(null);
+		self::assertSame(bin2hex($this->minimalJpeg()), bin2hex($jpeg->toBinary()));
 	}
 }

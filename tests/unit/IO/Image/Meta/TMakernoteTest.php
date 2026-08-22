@@ -182,6 +182,24 @@ class TMakernoteTest extends PHPUnit\Framework\TestCase
 		self::assertSame($fixed, $note->getThumbnail());
 	}
 
+	public function testCasioThumbnailStoredAsByteValues()
+	{
+		// The same preview written with the byte type rather than as opaque bytes: the
+		// values arrive as an integer array and still assemble into the JPEG.
+		$jpeg = "\xFF\xD8\xFF\xE0" . str_repeat("\x22", 12);
+		$dataPos = 6 + 2 + 12 + 4;   // header + count + one entry + next pointer
+		$ifd = $this->packIfd(
+			[[0x0004, TTIFFDataType::UByte, strlen($jpeg), pack('N', $dataPos)]],
+			true,
+		);
+		$note = "QVC\x00\x00\x00" . $ifd . $jpeg;
+
+		$parsed = TMakernote::fromNote($note, 'CASIO COMPUTER CO.,LTD.', $note, 0, true);
+		self::assertSame('Casio Type 2', $parsed->getVariant());
+		self::assertIsArray($parsed->getIfd()->getTag(0x0004)->getValues());
+		self::assertSame($jpeg, $parsed->getThumbnail());
+	}
+
 	public function testUnrecognizedMakeReturnsNull()
 	{
 		self::assertNull(TMakernote::fromNote('whatever bytes', 'Unknown Camera Co'));
@@ -237,6 +255,25 @@ class TMakernoteTest extends PHPUnit\Framework\TestCase
 		self::assertSame('Casio Type 2', $parsed->getVariant());
 		self::assertSame("\x01\x02", $parsed->getIfd()->getTag(0x0004)->getValues());
 		self::assertNull($parsed->getThumbnail());
+	}
+
+	public function testThumbnailTagHoldingSomethingOtherThanAJpeg()
+	{
+		// Casio's first preview tag holds four bytes that are no JPEG and cannot be
+		// repaired into one, so the search moves on to the second tag.
+		$jpeg = "\xFF\xD8\xFF\xE1" . str_repeat("\x33", 12);
+		$notJpeg = "\x89PNG";
+		$entries = 2;
+		$dataPos = 6 + 2 + $entries * 12 + 4;
+		$ifd = $this->packIfd([
+			[0x0004, TTIFFDataType::Undefined, strlen($notJpeg), $notJpeg],
+			[0x2000, TTIFFDataType::Undefined, strlen($jpeg), pack('N', $dataPos)],
+		], true);
+		$note = "QVC\x00\x00\x00" . $ifd . $jpeg;
+
+		$parsed = TMakernote::fromNote($note, 'CASIO COMPUTER CO.,LTD.', $note, 0, true);
+		self::assertSame($notJpeg, $parsed->getIfd()->getTag(0x0004)->getValues());
+		self::assertSame($jpeg, $parsed->getThumbnail());
 	}
 
 	public function testTagKnowledge()

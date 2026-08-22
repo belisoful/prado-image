@@ -485,10 +485,31 @@ composer install
 composer unittest                                    # tests
 vendor/bin/php-cs-fixer fix src                      # code style (tabs)
 vendor/bin/php-cs-fixer fix tests                    # (the finder excludes tests/, so name it)
-vendor/bin/phpstan analyse --memory-limit=1G         # static analysis
+vendor/bin/phpstan analyse --memory-limit=1G         # static analysis (level 4)
 ```
 
-Tests cover the format readers (dimensions and invalid-input rejection for JPEG/PNG/WebP, all three WebP variants, PNG ICC inflation); the **read-write-every-carrier matrix** across JPEG/PNG/WebP/TIFF/GIF (each container round-trips or explicitly refuses every metadata carrier its format defines, including the raster `getImage()`/`setImage()` paths); the GIF container (byte-faithful round trips of an animation exercising the whole standard, frame and extension editing, interlace, loop count, application-identity case, quantized import, and malformed-block rejection — cross-checked by decoding the composed files with GD and ImageMagick); the TIFF raster forms (tiles, planar, every bit depth, and the CMYK/YCbCr/Lab photometrics); the **private-spaces bridge** (reserved/free-space stream views that keep the maker notes byte-identical under Clip/Fail/Skip writes); the ICC profile coder and its pure-PHP color transform; the full XMP value grammar and schema registry; every makernote maker variant; the tag-interpretation decoders; the Photoshop resource decoders; the IPTC record set (parsing, tag-name and id access, validation/coercion, re-encode round trips); the Photoshop 8BIM codec (string and stream detection, IPTC decode/encode); the graphics seam (RGB and CMYK round trips, JPEG/PNG/WebP encode/decode, resampling, mono reduction, palette quantization, and the capability query in both libraries); and the compression codecs (LZW, GIF LZW, PackBits, CCITT fax, and predictor round trips plus their streaming filters). Test images and ICC profiles are generated in memory, so the repository carries no binary fixtures; the Imagick-path tests skip cleanly where `ext-imagick` is absent.
+Coverage is gated rather than merely reported, at two depths. **Lines** (99.92%) are checked
+on every push; every source file must be complete except a handful whose remaining lines no
+test can reach, each justified in [AGENTS.md](AGENTS.md):
+
+```sh
+XDEBUG_MODE=coverage vendor/bin/phpunit --testsuite unit --coverage-clover build/logs/clover.xml
+php tests/test_tools/coverage-gate.php build/logs/clover.xml
+```
+
+**Branches** (99.67%) are checked nightly, because instrumenting every branch takes far
+longer than the suite itself. It is the stronger measure: a covered line still hides a
+decision that only ever goes one way. The twenty branches that remain are unreachable by
+construction — mostly edges PHP emits itself, such as the implicit `UnhandledMatchError` of a
+`match` whose subject is already range-checked:
+
+```sh
+XDEBUG_MODE=coverage php -d memory_limit=10G vendor/bin/phpunit --testsuite unit \
+    --path-coverage --coverage-php build/logs/coverage.php
+php -d memory_limit=8G tests/test_tools/branch-gate.php build/logs/coverage.php
+```
+
+Tests cover the format readers (dimensions and invalid-input rejection for JPEG/PNG/WebP, all three WebP variants, PNG ICC inflation); the **read-write-every-carrier matrix** across JPEG/PNG/WebP/TIFF/GIF (each container round-trips or explicitly refuses every metadata carrier its format defines, including the raster `getImage()`/`setImage()` paths); the GIF container (byte-faithful round trips of an animation exercising the whole standard, frame and extension editing, interlace, loop count, application-identity case, quantized import, and malformed-block rejection — cross-checked by decoding the composed files with GD and ImageMagick); the TIFF raster forms (tiles, planar, every bit depth, and the CMYK/YCbCr/Lab photometrics); the **private-spaces bridge** (reserved/free-space stream views that keep the maker notes byte-identical under Clip/Fail/Skip writes); the ICC profile coder and its pure-PHP color transform; the full XMP value grammar and schema registry; every makernote maker variant; the tag-interpretation decoders; the Photoshop resource decoders; the IPTC record set (parsing, tag-name and id access, validation/coercion, re-encode round trips); the Photoshop 8BIM codec (string and stream detection, IPTC decode/encode); the graphics seam (RGB and CMYK round trips, JPEG/PNG/WebP encode/decode, resampling, mono reduction, palette quantization, and the capability query in both libraries); and the compression codecs (LZW, GIF LZW, PackBits, CCITT fax, and predictor round trips plus their streaming filters). Test images and ICC profiles are generated in memory, so the repository carries no binary fixtures; the Imagick-path tests skip cleanly where `ext-imagick` is absent, and one CI job runs the whole suite without it to keep that promise honest. Test data is deterministic — `PseudoRandomBytes` stands in for `random_bytes()` — because random input makes both assertions and coverage vary from run to run.
 
 > **Note:** the classes consume the framework's IO stream layer (`TStream`, `TLimitStream`, `TResourceType`) and the `Prado\IO\Compression\ICompressor` contract. Both are in `pradosoft/prado` **master** but not yet in a tagged release, so the development requirement is `^4.4 || dev-master`: it resolves to `dev-master` today and to the 4.4 release the moment it is tagged.
 

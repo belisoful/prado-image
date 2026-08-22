@@ -120,6 +120,17 @@
   100% can hide a branch no test drives. The gate in CI is the authority; when a line is
   reported uncovered there but covered locally, believe CI and write the test that actually
   exercises the branch. Do not chase it by weakening the gate.
+- Coverage is gated at two depths and both are expected to hold. **Lines: 99.92%** —
+  `tests/test_tools/coverage-gate.php`, run on every push. **Branches: 99.67%** —
+  `tests/test_tools/branch-gate.php`, run nightly by `.github/workflows/branch-coverage.yml`,
+  because a `--path-coverage` run takes far longer than the suite itself. Branch coverage is
+  the stronger measure: it catches a decision that only ever goes one way, which a covered
+  line hides. Every one of the 20 remaining untaken branches is unreachable by construction,
+  and most are not code anyone wrote — PHP emits an implicit `UnhandledMatchError` edge for a
+  `match` behind a range guard, an implicit `return null` after a `while (true)` that only
+  exits by return or throw, an implicit `default` for a `switch` over a validated private
+  field, and an implicit rethrow for a multi-catch whose `try` can only raise the listed
+  types. The rest are guards made redundant by an identical earlier check. Do not chase them.
 - Line coverage of `src` is **99.92%** and is expected to stay there: a change that adds
   an uncovered line is a change that needs a test.  Exactly five lines are knowingly
   unreachable from a test, and each is unreachable for a stated reason — do not "cover"

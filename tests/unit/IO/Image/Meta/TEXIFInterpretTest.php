@@ -167,6 +167,65 @@ class TEXIFInterpretTest extends PHPUnit\Framework\TestCase
 		self::assertSame('10, 20, 30 (Degrees Minutes Seconds North or South)', TEXIFTags::textValue($dest, TEXIFTags::GPS));
 	}
 
+	public function testSpecialDecodersWithTheOtherValueShape()
+	{
+		// The same four tags a camera may write either as Undefined bytes or as a
+		// numeric array; each decoder reads the shape it is given.
+		$components = new TTIFFTag(37121, TTIFFDataType::UByte, [1, 2, 3, 0]);
+		self::assertSame('Y Cb Cr -', TEXIFTags::textValue($components, TEXIFTags::EXIF));
+
+		$cfa = new TTIFFTag(41730, TTIFFDataType::UByte, [0, 2, 0, 2, 0, 1, 1, 2]);
+		self::assertSame('RG / GB', TEXIFTags::textValue($cfa, TEXIFTags::EXIF));
+
+		// The subsampling pair is a numeric pair by definition: bytes carry no pair.
+		$subSampling = new TTIFFTag(530, TTIFFDataType::Undefined, "\x00\x02\x00\x01");
+		self::assertSame('', TEXIFTags::textValue($subSampling, TEXIFTags::TIFF));
+
+		// And the learning block is a byte string: an array form carries no sets.
+		$learning = new TTIFFTag(37511, TTIFFDataType::UByte, [0, 1, 0, 0, 0, 2]);
+		self::assertNull(TEXIFTags::textValue($learning, TEXIFTags::EXIF));
+	}
+
+	public function testStringTagWrittenWithANumericType()
+	{
+		// A text tag a camera wrote with a numeric type still renders: the values join
+		// rather than being dropped for having the wrong shape.
+		$make = new TTIFFTag(271, TTIFFDataType::UShort, [12, 34]);
+		self::assertSame('1234', TEXIFTags::textValue($make, TEXIFTags::TIFF));
+	}
+
+	public function testSignedRationalCoordinate()
+	{
+		// A coordinate written with the signed rational type decodes the same way the
+		// spec's unsigned form does.
+		$signed = new TTIFFTag(2, TTIFFDataType::SRational, [[34, 1], [3, 1], [3000, 100]]);
+		self::assertSame('34° 3\' 30"', TEXIFTags::textValue($signed, TEXIFTags::GPS));
+
+		// A signed rational that is not three long has no composite form.
+		$pair = new TTIFFTag(2, TTIFFDataType::SRational, [[34, 1], [3, 1]]);
+		self::assertStringNotContainsString('°', (string) TEXIFTags::textValue($pair, TEXIFTags::GPS));
+
+		// Nor has a GPS tag that is no rational at all: GPSVersionID is four bytes.
+		$version = new TTIFFTag(0, TTIFFDataType::UByte, [2, 3, 0, 0]);
+		self::assertStringStartsWith('2, 3, 0, 0', (string) TEXIFTags::textValue($version, TEXIFTags::GPS));
+	}
+
+	public function testCodedStringThatCannotBeConverted()
+	{
+		// Text ending mid-character cannot be converted at all (iconv answers false
+		// whether or not it is asked to ignore): the charset marker is written with an
+		// empty payload rather than raising.
+		self::assertSame("UNICODE\0", TEXIFTags::encodeCodedString("abc\xE2", 'UNICODE'));
+		self::assertSame("JIS\0\0\0\0\0", TEXIFTags::encodeCodedString("abc\xE2", 'JIS'));
+
+		// And a JIS payload that stops inside an escape sequence passes through as the
+		// stored bytes instead of decoding to nothing.
+		$coded = "JIS\0\0\0\0\0" . "\x1B\x24";
+		self::assertSame("\x1B\x24", TEXIFTags::decodeCodedString($coded));
+		$tag = new TTIFFTag(37510, TTIFFDataType::Undefined, $coded);
+		self::assertSame("\x1B\x24", TEXIFTags::textValue($tag, TEXIFTags::EXIF));
+	}
+
 	public function testFindByNameGroupScoping()
 	{
 		self::assertSame([TEXIFTags::GPS, 2], TEXIFTags::findByName('GPSLatitude', TEXIFTags::GPS));

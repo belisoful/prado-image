@@ -1,5 +1,7 @@
 <?php
 
+use Prado\Exceptions\TIOException;
+use Prado\IO\Compression\TCCITTFaxCompressor;
 use Prado\IO\Compression\TLZWCompressor;
 use Prado\IO\Compression\TPackBitsCompressor;
 use Prado\IO\Image\Meta\TEXIF;
@@ -26,6 +28,28 @@ class TTIFFRasterBlitProbe extends TTIFFRaster
 	public static function blitBlock(string &$plane, string $block, array $position, int $width, int $height, int $perPlane): void
 	{
 		static::blit($plane, $block, $position, $width, $height, $perPlane);
+	}
+}
+
+/**
+ * Exposes the protected block decoder so the T4Options bit can be exercised directly:
+ * {@see TTIFFRaster::readGeometry()} carries no 't4options' entry, so the whole-file path
+ * always reaches the block decoder with the one-dimensional Group 3 default.
+ */
+class TTIFFRasterDecodeProbe extends TTIFFRaster
+{
+	/**
+	 * Decompresses one block and normalizes it to one byte per sample.
+	 * @param string $data The block bytes.
+	 * @param array $geometry The geometry.
+	 * @param int $blockWidth The block width in pixels.
+	 * @param int $rows The block height in rows.
+	 * @param int $perPlane The samples per pixel in this plane.
+	 * @return ?string The block's sample bytes, or null when unsupported.
+	 */
+	public static function decodeOneBlock(string $data, array $geometry, int $blockWidth, int $rows, int $perPlane): ?string
+	{
+		return static::decodeBlock($data, $geometry, $blockWidth, $rows, $perPlane);
 	}
 }
 
@@ -150,6 +174,96 @@ class TTIFFRasterFormsTest extends PHPUnit\Framework\TestCase
 		self::assertSame("\x00\xFF\xFF", substr($rgb, 9, 3));
 	}
 
+	public function testTiledPlanarConfigurationSeparate()
+	{
+		// 4x4 in 2x2 tiles with the channels in separate planes: four red tiles, then
+		// four green, then four blue, so the tile index carries both plane and position.
+		$solid = fn (array $values) => array_map(fn ($value) => str_repeat(chr($value), 4), $values);
+		$tiles = array_merge(
+			$solid([0x10, 0x20, 0x30, 0x40]),
+			$solid([0x50, 0x60, 0x70, 0x80]),
+			$solid([0x90, 0xA0, 0xB0, 0xC0]),
+		);
+		$tags = $this->baseTags(4, 4, TTIFFRaster::Rgb, [8, 8, 8], 3);
+		unset($tags[278]);
+		$tags[284] = [TTIFFDataType::UShort, [2]];
+		$tags[322] = [TTIFFDataType::ULong, [2]];
+		$tags[323] = [TTIFFDataType::ULong, [2]];
+
+		$rgb = TImageGraphics::rgbPixels(TTIFF::fromString($this->buildTiff($tags, 324, $tiles, 325))->getImage());
+		self::assertSame(4 * 4 * 3, strlen($rgb));
+		self::assertSame("\x10\x50\x90", substr($rgb, 0, 3));                 // (0,0), tile 0 of each plane
+		self::assertSame("\x20\x60\xA0", substr($rgb, 2 * 3, 3));             // (2,0), tile 1
+		self::assertSame("\x30\x70\xB0", substr($rgb, (2 * 4) * 3, 3));       // (0,2), tile 2
+		self::assertSame("\x40\x80\xC0", substr($rgb, (2 * 4 + 2) * 3, 3));   // (2,2), tile 3
+	}
+
+	public function testTwoDimensionalGroup3NeedsTheT4OptionsBit()
+	{
+		// Four 64-pixel rows, each a run of white shifted one pixel right of the last.
+		$rows = [];
+		for ($y = 0; $y < 4; $y++) {
+			$rows[] = str_repeat('0', 8 + $y) . str_repeat('1', 24) . str_repeat('0', 32 - $y);
+		}
+		$bits = implode('', $rows);
+		$packed = implode('', array_map(fn (string $byte) => chr(bindec($byte)), str_split($bits, 8)));
+		$expected = implode('', array_map(fn (string $bit) => chr((int) $bit), str_split($bits)));
+		$encoded = (new TCCITTFaxCompressor(64, TCCITTFaxCompressor::Group3TwoD))->encode($packed);
+		$geometry = ['bits' => 1, 'compression' => TTIFF::CompressionGroup3, 'fillOrder' => 1, 'predictor' => 1];
+
+		// T4Options bit 0 selects the two-dimensional coding, which decodes the rows.
+		$decoded = TTIFFRasterDecodeProbe::decodeOneBlock($encoded, ['t4options' => 1] + $geometry, 64, 4, 1);
+		self::assertSame(bin2hex($expected), bin2hex($decoded));
+
+		// Without the bit the same bytes are read as one-dimensional Group 3, whose
+		// row codings do not begin with a tag bit, so the stream is not decodable.
+		try {
+			TTIFFRasterDecodeProbe::decodeOneBlock($encoded, ['t4options' => 0] + $geometry, 64, 4, 1);
+			self::fail('a two-dimensional Group 3 stream decoded as one-dimensional');
+		} catch (TIOException $e) {
+			self::assertSame('ccittfax_code_invalid', $e->getErrorCode());
+		}
+	}
+
+	public function testTwoDimensionalGroup3FileDecodesThroughTheNormalPath()
+	{
+		// A real file, not a probe: Compression 3 with T4Options bit 0 set is how a fax
+		// writer records two-dimensional coding, and reading tag 292 is what tells the
+		// decoder to expect it.  Four 64-pixel rows, each run shifted one pixel right.
+		$rows = [];
+		for ($y = 0; $y < 4; $y++) {
+			$rows[] = str_repeat('0', 8 + $y) . str_repeat('1', 24) . str_repeat('0', 32 - $y);
+		}
+		$bits = implode('', $rows);
+		$packed = implode('', array_map(fn (string $byte) => chr(bindec($byte)), str_split($bits, 8)));
+		$encoded = (new TCCITTFaxCompressor(64, TCCITTFaxCompressor::Group3TwoD))->encode($packed);
+
+		$tags = $this->baseTags(64, 4, TTIFFRaster::WhiteIsZero, [1], 1);
+		$tags[259] = [TTIFFDataType::UShort, [TTIFF::CompressionGroup3]];
+		$tags[292] = [TTIFFDataType::ULong, [1]];   // T4Options: two-dimensional coding
+		$tiff = TTIFF::fromString($this->buildTiff($tags, 273, [$encoded], 279));
+
+		$rgb = TImageGraphics::rgbPixels($tiff->getImage());
+		self::assertSame(64 * 4 * 3, strlen($rgb));
+		// WhiteIsZero: a set bit is black.  Row 0 runs white 0-7, black 8-31, white 32-63.
+		foreach ([[0, 0, "\xFF\xFF\xFF"], [0, 8, "\x00\x00\x00"], [0, 32, "\xFF\xFF\xFF"],
+			[3, 10, "\xFF\xFF\xFF"], [3, 11, "\x00\x00\x00"], [3, 34, "\x00\x00\x00"],
+			[3, 35, "\xFF\xFF\xFF"]] as [$y, $x, $want]) {
+			self::assertSame(bin2hex($want), bin2hex(substr($rgb, ($y * 64 + $x) * 3, 3)), "pixel ($x,$y)");
+		}
+
+		// Without the tag the same file is read as one-dimensional and cannot decode --
+		// which is exactly what happened to every 2-D fax TIFF before tag 292 was read.
+		unset($tags[292]);
+		$oneD = TTIFF::fromString($this->buildTiff($tags, 273, [$encoded], 279));
+		try {
+			$oneD->getImage();
+			self::fail('a two-dimensional Group 3 file decoded as one-dimensional');
+		} catch (TIOException $e) {
+			self::assertSame('ccittfax_code_invalid', $e->getErrorCode());
+		}
+	}
+
 	public function testFourBitGrayscaleAndFillOrderTwo()
 	{
 		// 4-bit gray: two pixels per byte, values scaled to the 0-15 range.
@@ -260,6 +374,22 @@ class TTIFFRasterFormsTest extends PHPUnit\Framework\TestCase
 		$rgb = TImageGraphics::rgbPixels(TTIFF::fromString($this->buildTiff($tags, 273, [$pixels], 279))->getImage());
 		self::assertSame("\xFF\xFF\xFF", substr($rgb, 0, 3));
 		self::assertSame("\x00\x00\x00", substr($rgb, 3, 3));
+	}
+
+	public function testIccLabOffsetsItsChromaWhereCieLabSignsIt()
+	{
+		// L*=100 with a*=b*=-128 is cyan and with a*=b*=0 is white; CIE L*a*b* stores
+		// those chroma values as signed bytes, ICC L*a*b* as bytes offset by 128, so the
+		// two encodings carry the same pair of pixels in the opposite order.
+		$tags = $this->baseTags(2, 1, TTIFFRaster::CieLab, [8, 8, 8], 3);
+		$rgb = TImageGraphics::rgbPixels(TTIFF::fromString($this->buildTiff($tags, 273, ["\xFF\x80\x80\xFF\x00\x00"], 279))->getImage());
+		self::assertSame("\x00\xFF\xFF", substr($rgb, 0, 3));   // 0x80 -> -128
+		self::assertSame("\xFF\xFF\xFF", substr($rgb, 3, 3));   // 0x00 -> 0
+
+		$tags = $this->baseTags(2, 1, TTIFFRaster::ICCLab, [8, 8, 8], 3);
+		$rgb = TImageGraphics::rgbPixels(TTIFF::fromString($this->buildTiff($tags, 273, ["\xFF\x00\x00\xFF\x80\x80"], 279))->getImage());
+		self::assertSame("\x00\xFF\xFF", substr($rgb, 0, 3));   // 0x00 - 128 -> -128
+		self::assertSame("\xFF\xFF\xFF", substr($rgb, 3, 3));   // 0x80 - 128 -> 0
 	}
 
 	public function testCompressedTilesWithPredictor()

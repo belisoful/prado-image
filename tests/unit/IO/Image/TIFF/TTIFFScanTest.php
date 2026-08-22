@@ -8,7 +8,33 @@ use Prado\IO\Image\TIFF\TTIFFDocument;
 use Prado\IO\Image\TIFF\TTIFFIfd;
 use Prado\IO\Image\TTIFF;
 use Prado\IO\Stream\TNoSeekStream;
+use Prado\IO\Stream\TStreamDecorator;
 use Prado\IO\TStream;
+
+/**
+ * A seekable stream that refuses to seek past its end, reporting the failure the PSR-7
+ * way — with a plain \RuntimeException rather than the framework's TIOException.
+ */
+class TBoundedSeekStream extends TStreamDecorator
+{
+	/** @var int The number of seeks refused so far. */
+	public int $refusals = 0;
+
+	/**
+	 * Seeks within the stream, refusing an absolute position past the end.
+	 * @param int $offset The stream offset.
+	 * @param int $whence SEEK_SET, SEEK_CUR, or SEEK_END.
+	 * @throws \RuntimeException When the position lies past the end of the stream.
+	 */
+	public function seek(int $offset, int $whence = SEEK_SET): void
+	{
+		if ($whence === SEEK_SET && $offset > (int) $this->getSize()) {
+			$this->refusals++;
+			throw new \RuntimeException("Cannot seek to $offset, past the end of the stream");
+		}
+		parent::seek($offset, $whence);
+	}
+}
 
 class TTIFFScanTest extends PHPUnit\Framework\TestCase
 {
@@ -110,6 +136,57 @@ class TTIFFScanTest extends PHPUnit\Framework\TestCase
 		self::assertSame('CapCam', $scanned->getIfd(0)->getTagValue(271));
 		self::assertNull($scanned->getIfd(0)->getTag(700));
 		self::assertNotEmpty(array_filter($scanned->getWarnings(), fn ($w) => str_contains($w, 'scan cap')));
+	}
+
+	public function testScanSkipsATagWhoseValueAreaRunsPastTheData()
+	{
+		// A tag whose value is larger than four bytes lives at an offset elsewhere in the
+		// file.  When that offset points past the end, the read fails and the scan drops
+		// the tag with a warning rather than aborting the whole directory.
+		$exif = new TEXIF();
+		$exif->setValueByName('Make', 'TruncCam');
+		$exif->setValueByName('Model', 'ModelThatIsLongerThanFourBytes');
+		$exif->setSignature('');
+		$bytes = $exif->toBinary();
+
+		// Repoint IFD0's Model tag at an offset well past the end of the file.
+		$entry = strpos($bytes, pack('n', 272));
+		self::assertNotFalse($entry, 'the Model tag entry is present');
+		$bytes = substr_replace($bytes, pack('N', strlen($bytes) + 0x1000), $entry + 8, 4);
+
+		$scanned = TTIFFDocument::scanStream(TStream::fromString($bytes));
+		self::assertSame('TruncCam', $scanned->getIfd(0)->getTagValue(271), 'the sound tag still reads');
+		self::assertNull($scanned->getIfd(0)->getTag(272), 'the unreadable tag is dropped');
+		self::assertNotEmpty(
+			array_filter($scanned->getWarnings(), fn ($w) => str_contains($w, 'runs past the data')),
+			'the scan warns about the value area',
+		);
+	}
+
+	public function testScanSkipsATagWhoseValueAreaRefusesToSeekThePsr7Way()
+	{
+		// The same failure reported the PSR-7 way: a plain \RuntimeException rather than
+		// the framework's TIOException.  The multi-catch has to answer both, and only a
+		// stream that refuses the seek itself reaches the second of the two type checks.
+		$exif = new TEXIF();
+		$exif->setValueByName('Make', 'BoundCam');
+		$exif->setValueByName('Model', 'ModelThatIsLongerThanFourBytes');
+		$exif->setSignature('');
+		$bytes = $exif->toBinary();
+		$entry = strpos($bytes, pack('n', 272));
+		self::assertNotFalse($entry, 'the Model tag entry is present');
+		$bytes = substr_replace($bytes, pack('N', strlen($bytes) + 0x1000), $entry + 8, 4);
+
+		$stream = new TBoundedSeekStream(TStream::fromString($bytes));
+		$scanned = TTIFFDocument::scanStream($stream);
+
+		self::assertSame(1, $stream->refusals, 'the stream refused the out-of-range seek');
+		self::assertSame('BoundCam', $scanned->getIfd(0)->getTagValue(271), 'the sound tag still reads');
+		self::assertNull($scanned->getIfd(0)->getTag(272), 'the unreadable tag is dropped');
+		self::assertNotEmpty(
+			array_filter($scanned->getWarnings(), fn ($w) => str_contains($w, 'runs past the data')),
+			'the scan warns about the value area',
+		);
 	}
 
 	public function testScannedExifComposesMetadataOnlySegment()
@@ -220,6 +297,31 @@ class TTIFFScanTest extends PHPUnit\Framework\TestCase
 		$scanned = TTIFFDocument::scanStream(TStream::fromString("MM\x00\x2A\x00\x00\x00\x08"));
 		self::assertSame([], $scanned->getIfds());
 		self::assertSame(['IFD offset 8 is outside the data'], $scanned->getWarnings());
+	}
+
+	public function testScanToleratesPsr7SeekFailures()
+	{
+		// A stream that raises the PSR-7 \RuntimeException instead of a TIOException is
+		// tolerated the same way: the scan warns and carries on with what it can read.
+		$stream = new TBoundedSeekStream(TStream::fromString("MM\x00\x2A\x00\x00\x00\x40"));
+		$scanned = TTIFFDocument::scanStream($stream);
+		self::assertSame(1, $stream->refusals);
+		self::assertSame([], $scanned->getIfds());
+		self::assertSame(['IFD offset 64 is outside the data'], $scanned->getWarnings());
+
+		// The same for a tag whose value area lies past the end of the stream.
+		$bytes = "MM\x00\x2A\x00\x00\x00\x08"
+			. "\x00\x02"
+			. "\x01\x0F\x00\x02\x00\x00\x00\x20\x00\x00\xFF\x00"
+			. "\x01\x10\x00\x02\x00\x00\x00\x04" . "def\0"
+			. "\x00\x00\x00\x00";
+
+		$stream = new TBoundedSeekStream(TStream::fromString($bytes));
+		$scanned = TTIFFDocument::scanStream($stream);
+		self::assertSame(1, $stream->refusals);
+		self::assertNull($scanned->getIfd(0)->getTag(271));
+		self::assertSame('def', $scanned->getIfd(0)->getTagValue(272));
+		self::assertSame(['tag 271 value at 65280 runs past the data'], $scanned->getWarnings());
 	}
 
 	public function testScanSkipsAnUnknownDataType()

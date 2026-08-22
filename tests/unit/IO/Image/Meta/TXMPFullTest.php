@@ -598,6 +598,145 @@ class TXMPFullTest extends PHPUnit\Framework\TestCase
 		$reparsed = Prado\IO\Image\Meta\TEXIF::fromSegment($exif->toBinary());
 		self::assertSame('TIFF tag 700', $reparsed->getXMP()->getTitle());
 	}
+
+	public function testDefaultNamespaceDeclarationIsKeyedByTheEmptyPrefix()
+	{
+		$xml = <<<'XML'
+			<x:xmpmeta xmlns:x="adobe:ns:meta/">
+			 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+			  <rdf:Description rdf:about=""
+			    xmlns="http://acme.example/default/"
+			    xmlns:dc="http://purl.org/dc/elements/1.1/">
+			   <dc:format>image/jpeg</dc:format>
+			  </rdf:Description>
+			 </rdf:RDF>
+			</x:xmpmeta>
+			XML;
+		$namespaces = TXMP::parse($xml)->getNamespaces();
+
+		// A default declaration (xmlns="…") has no prefix, so it is keyed by the empty string.
+		self::assertArrayHasKey('', $namespaces);
+		self::assertSame('http://acme.example/default/', $namespaces['']);
+		self::assertSame(TXMP::NS_DC, $namespaces['dc']);
+		// The rdf, x, and xml declarations are structural, not schema namespaces.
+		self::assertArrayNotHasKey('rdf', $namespaces);
+		self::assertArrayNotHasKey('x', $namespaces);
+		self::assertArrayNotHasKey('xml', $namespaces);
+	}
+
+	public function testLanguageAlternativeWhoseFirstItemHasNoLanguage()
+	{
+		$xml = <<<'XML'
+			<x:xmpmeta xmlns:x="adobe:ns:meta/">
+			 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+			  <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">
+			   <dc:title>
+			    <rdf:Alt>
+			     <rdf:li>Untagged</rdf:li>
+			     <rdf:li>Second</rdf:li>
+			     <rdf:li xml:lang="de">Zweite</rdf:li>
+			    </rdf:Alt>
+			   </dc:title>
+			  </rdf:Description>
+			 </rdf:RDF>
+			</x:xmpmeta>
+			XML;
+		$xmp = TXMP::parse($xml);
+
+		// An unlabelled first item stands in for x-default; later unlabelled items are
+		// keyed by their position instead.
+		self::assertSame(['x-default' => 'Untagged', 1 => 'Second', 'de' => 'Zweite'], $xmp->getLangAlt(TXMP::NS_DC, 'title'));
+		self::assertSame('Untagged', $xmp->getTitle());
+	}
+
+	public function testAPathWithoutAPrefixResolvesToNothing()
+	{
+		$xmp = TXMP::parse(self::REAL_WORLD);
+		// The first step names the schema; a bare name has no namespace to look in.
+		self::assertNull($xmp->getByPath('Make'));
+		self::assertNull($xmp->getByPath('title[1]'));
+		self::assertSame('PradoCam', $xmp->getByPath('tiff:Make'));
+	}
+
+	public function testSetPropertyTakesALanguageMapForALanguageAlternative()
+	{
+		$xmp = TXMP::blank();
+		// dc:title is a language alternative in its schema, so a map is written as one
+		// even though no $arrayType says so.
+		$xmp->setProperty(TXMP::NS_DC, 'title', ['x-default' => 'Sunset', 'de' => 'Sonnenuntergang']);
+
+		$reparsed = TXMP::parse($xmp->toXml());
+		self::assertSame('Alt', $reparsed->getArrayType(TXMP::NS_DC, 'title'));
+		self::assertSame(['x-default' => 'Sunset', 'de' => 'Sonnenuntergang'], $reparsed->getLangAlt(TXMP::NS_DC, 'title'));
+		self::assertSame('Sonnenuntergang', $reparsed->getTitle('de'));
+	}
+
+	public function testBooleanValuesAreWrittenAsTrueAndFalse()
+	{
+		$xmp = TXMP::blank();
+		$xmp->setProperty(TXMP::NS_RIGHTS, 'Marked', false);
+		self::assertSame('False', $xmp->getProperty(TXMP::NS_RIGHTS, 'Marked'));
+		self::assertSame('False', TXMP::parse($xmp->toXml())->getProperty(TXMP::NS_RIGHTS, 'Marked'));
+
+		$xmp->setProperty(TXMP::NS_RIGHTS, 'Marked', true);
+		self::assertSame('True', TXMP::parse($xmp->toXml())->getProperty(TXMP::NS_RIGHTS, 'Marked'));
+
+		// A boolean inside a structure takes the same form.
+		$xmp->setProperty(TXMP::NS_MM, 'DerivedFrom', ['stRef:instanceID' => 'iid:1', 'stRef:renditionClass' => false]);
+		self::assertSame(
+			['instanceID' => 'iid:1', 'renditionClass' => 'False'],
+			TXMP::parse($xmp->toXml())->getProperty(TXMP::NS_MM, 'DerivedFrom'),
+		);
+	}
+
+	public function testAnUnknownCollectionFormFallsBackToBag()
+	{
+		$xmp = TXMP::blank();
+		// 'Ordered' is not an rdf collection: the value is written as a Bag, not as the
+		// dc:creator schema's Seq (an explicit form keeps the schema out of it).
+		$xmp->setProperty(TXMP::NS_DC, 'creator', ['One', 'Two'], 'Ordered');
+
+		$reparsed = TXMP::parse($xmp->toXml());
+		self::assertSame('Bag', $reparsed->getArrayType(TXMP::NS_DC, 'creator'));
+		self::assertSame(['One', 'Two'], $reparsed->getArrayItems(TXMP::NS_DC, 'creator'));
+		self::assertStringContainsString('<rdf:Bag>', $xmp->toXml());
+		self::assertStringNotContainsString('rdf:Ordered', $xmp->toXml());
+	}
+
+	public function testCreatorsAndKeywordsHeldAsSimpleValues()
+	{
+		$xml = <<<'XML'
+			<x:xmpmeta xmlns:x="adobe:ns:meta/">
+			 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+			  <rdf:Description rdf:about=""
+			    xmlns:dc="http://purl.org/dc/elements/1.1/"
+			    dc:creator="Solo Author" dc:subject="lone-keyword"/>
+			 </rdf:RDF>
+			</x:xmpmeta>
+			XML;
+		$xmp = TXMP::parse($xml);
+
+		// A packet that stores them as plain values still answers with lists.
+		self::assertSame(['Solo Author'], $xmp->getCreators());
+		self::assertSame(['lone-keyword'], $xmp->getKeywords());
+
+		// An absent property is the empty list, not a list holding nothing.
+		$empty = TXMP::blank();
+		self::assertSame([], $empty->getCreators());
+		self::assertSame([], $empty->getKeywords());
+	}
+
+	public function testValidateAcceptsAStructureAndRejectsAListInItsPlace()
+	{
+		// xmpMM:DerivedFrom really is a structure here, so nothing is reported for it.
+		self::assertArrayNotHasKey('xmpMM:DerivedFrom', TXMP::parse(self::REAL_WORLD)->validate());
+
+		// An array that is a list is as wrong as a plain string would be.
+		$listed = TXMP::blank();
+		$listed->setProperty(TXMP::NS_MM, 'DerivedFrom', ['one', 'two'], 'Bag');
+		self::assertSame(['one', 'two'], $listed->getProperty(TXMP::NS_MM, 'DerivedFrom'));
+		self::assertSame('expected a structure', $listed->validate()['xmpMM:DerivedFrom']);
+	}
 }
 
 /**

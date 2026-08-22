@@ -200,6 +200,46 @@ class TEXIFAudioTest extends PHPUnit\Framework\TestCase
 		self::assertSame('0300', $reparsed->getVersion());
 	}
 
+	public function testAbsentTextAttributesReadAsNull()
+	{
+		// A WAVE carrying only the mandatory version has none of the text chunks, and
+		// none of them is invented as an empty string.
+		$audio = TEXIFAudio::fromString($this->waveBytes(['ever' => '0300']));
+		self::assertNull($audio->getRelatedImage());
+		self::assertNull($audio->getRecordingTime());
+		self::assertNull($audio->getManufacturer());
+		self::assertNull($audio->getModel());
+		self::assertNull($audio->getUserComment());
+		self::assertNull($audio->getUserCommentCharset());
+		self::assertCount(1, $audio->getAttributes());
+	}
+
+	public function testRemovingATextAttributeDropsItsChunk()
+	{
+		$audio = TEXIFAudio::fromString($this->waveBytes([
+			'ever' => '0300',
+			'erel' => "DSC00001.JPG\0",
+			'etim' => "10:05:10.130\0",
+			'ecor' => "PradoCam\0",
+			'emdl' => "PC-2000\0",
+		]));
+		$audio->setRelatedImage(null);
+		$audio->setRecordingTime(null);
+		$audio->setManufacturer(null);
+		$audio->setModel(null);
+
+		self::assertNull($audio->getAttribute(TEXIFAudio::RelatedImageChunk));
+		self::assertSame(['ever'], array_keys($audio->getAttributes()));
+
+		$reparsed = TEXIFAudio::fromString($audio->toBinary());
+		self::assertTrue($reparsed->getHasExifList());
+		self::assertSame('0300', $reparsed->getVersion());
+		self::assertNull($reparsed->getRelatedImage());
+		self::assertNull($reparsed->getRecordingTime());
+		self::assertNull($reparsed->getManufacturer());
+		self::assertNull($reparsed->getModel());
+	}
+
 	public function testDroppingEveryAttributeRemovesTheExifList()
 	{
 		$audio = TEXIFAudio::fromString($this->waveBytes(['ever' => '0300', 'erel' => "DSC00001.JPG\0"]));

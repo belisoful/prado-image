@@ -49,7 +49,7 @@ class TLZWCompressorTest extends PHPUnit\Framework\TestCase
 
 	public function testRandomBytes()
 	{
-		$this->roundTrip(random_bytes(20000));
+		$this->roundTrip(PseudoRandomBytes::bytes(20000, 'lzw-1'));
 	}
 
 	public function testAllByteValues()

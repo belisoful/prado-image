@@ -3,6 +3,7 @@
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\IO\Image\Meta\TJFIF;
 use Prado\IO\Image\Meta\TJFXX;
+use Prado\IO\TStream;
 
 /**
  * The JFIF and JFXX APP0 thumbnails at their edges: an absent, cleared, malformed, or
@@ -16,6 +17,28 @@ class TJFIFJFXXTest extends PHPUnit\Framework\TestCase
 	{
 		$image = imagecreatetruecolor($width, $height);
 		imagefilledrectangle($image, 0, 0, $width - 1, $height - 1, imagecolorallocate($image, 200, 100, 50));
+		return $image;
+	}
+
+	/**
+	 * A true-color image whose every pixel differs, so a JPEG of it is larger than the
+	 * palette and RGB forms of the same thumbnail.
+	 * @param int $width
+	 * @param int $height
+	 */
+	private function noise(int $width, int $height): \GdImage
+	{
+		$image = imagecreatetruecolor($width, $height);
+		for ($y = 0; $y < $height; $y++) {
+			for ($x = 0; $x < $width; $x++) {
+				imagesetpixel($image, $x, $y, imagecolorallocate(
+					$image,
+					($x * 97 + $y * 41) % 256,
+					($x * 151 + $y * 7) % 256,
+					($x * 23 + $y * 179) % 256,
+				));
+			}
+		}
 		return $image;
 	}
 
@@ -82,6 +105,28 @@ class TJFIFJFXXTest extends PHPUnit\Framework\TestCase
 		};
 		self::expectException(TInvalidDataValueException::class);
 		$jfif->toBinary();
+	}
+
+	public function testJfifParsesFromAStreamAsItDoesFromAString()
+	{
+		$jfif = new TJFIF();
+		$jfif->setXDensity(300);
+		$jfif->setYDensity(200);
+		$image = $this->image(4, 3);
+		$jfif->setImage($image);
+		imagedestroy($image);
+		$binary = $jfif->toBinary();
+
+		// The stream is read to its end and parsed like the equivalent string.
+		$parsed = TJFIF::parse(TStream::fromString($binary));
+		self::assertInstanceOf(TJFIF::class, $parsed);
+		self::assertSame(300, $parsed->getXDensity());
+		self::assertSame(200, $parsed->getYDensity());
+		self::assertSame([4, 3], [$parsed->getXThumbnail(), $parsed->getYThumbnail()]);
+		self::assertSame(bin2hex($binary), bin2hex($parsed->toBinary()));
+
+		// A stream that is not JFIF is refused the same way a string is.
+		self::assertFalse(TJFIF::parse(TStream::fromString("JFIF\x00\x01")));
 	}
 
 	//
@@ -189,5 +234,67 @@ class TJFIFJFXXTest extends PHPUnit\Framework\TestCase
 		// An encoding no reader knows is refused rather than written with a JFXX header.
 		$jfxx->setFormat(0x99);
 		self::assertFalse($jfxx->toBinary());
+	}
+
+	public function testJfxxParsesFromAStreamAsItDoesFromAString()
+	{
+		$jfxx = new TJFXX();
+		$image = $this->image(4, 3);
+		$jfxx->setImage($image, TJFXX::COLOR_THUMB);
+		imagedestroy($image);
+		$binary = (string) $jfxx->toBinary();
+
+		$parsed = TJFXX::parse(TStream::fromString($binary));
+		self::assertInstanceOf(TJFXX::class, $parsed);
+		self::assertSame(TJFXX::COLOR_THUMB, $parsed->getFormat());
+		self::assertSame([4, 3], [$parsed->getXThumbnail(), $parsed->getYThumbnail()]);
+		self::assertSame(bin2hex($binary), bin2hex((string) $parsed->toBinary()));
+
+		// A stream too short to be JFXX is refused the same way a string is.
+		self::assertFalse(TJFXX::parse(TStream::fromString('JFXX')));
+	}
+
+	public function testJfxxEfficiencyPicksThePaletteWhenItIsTheSmallestOfTheThree()
+	{
+		// 32x32 is 1024 pixels: the 768-byte palette plus one index per pixel is 1792
+		// bytes against 3072 for RGB, and a quality-100 JPEG of pixel-by-pixel noise is
+		// larger than both — so the palette form wins.
+		$image = $this->noise(32, 32);
+		$jfxx = new TJFXX();
+		self::assertTrue($jfxx->setImage($image, TJFXX::EFFICIENCY_THUMB, 100));
+		imagedestroy($image);
+
+		self::assertSame(TJFXX::PALETTE_THUMB, $jfxx->getFormat());
+		self::assertSame(768, strlen((string) $jfxx->getPalette()));
+		self::assertSame(1024, strlen((string) $jfxx->getThumbnail()));
+
+		// What was chosen is what a reader gets back.
+		$parsed = TJFXX::parse((string) $jfxx->toBinary());
+		self::assertInstanceOf(TJFXX::class, $parsed);
+		self::assertSame(TJFXX::PALETTE_THUMB, $parsed->getFormat());
+		self::assertSame([32, 32], [$parsed->getXThumbnail(), $parsed->getYThumbnail()]);
+		self::assertInstanceOf(\GdImage::class, $parsed->getImage());
+	}
+
+	public function testJfxxEfficiencyPicksRgbForAThumbnailTooSmallToPayForAPalette()
+	{
+		// 8x8 is 64 pixels: 192 bytes of RGB against 832 for the palette form, and no
+		// JPEG is that small — its markers alone cost more.
+		$image = $this->image(8, 8);
+		$jfxx = new TJFXX();
+		self::assertTrue($jfxx->setImage($image, TJFXX::EFFICIENCY_THUMB));
+		imagedestroy($image);
+
+		self::assertSame(TJFXX::COLOR_THUMB, $jfxx->getFormat());
+		self::assertNull($jfxx->getPalette());
+		self::assertSame(192, strlen((string) $jfxx->getThumbnail()));
+
+		// The same image at 64x64 is large enough for the JPEG to beat both raw forms.
+		$large = $this->image(64, 64);
+		$jpeg = new TJFXX();
+		self::assertTrue($jpeg->setImage($large, TJFXX::EFFICIENCY_THUMB));
+		imagedestroy($large);
+		self::assertSame(TJFXX::JPEG_THUMB, $jpeg->getFormat());
+		self::assertLessThan(64 * 64 + 768, strlen((string) $jpeg->getThumbnail()));
 	}
 }

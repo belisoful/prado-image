@@ -11,7 +11,9 @@ use Prado\IO\Image\TImageChunk;
 use Prado\IO\Image\TImageGraphics;
 use Prado\IO\Image\TJPEG;
 use Prado\IO\Image\TPhotoshopIRB;
+use Prado\IO\Image\TPhotoshopResource;
 use Prado\IO\Image\TPNG;
+use Prado\IO\Image\TPrivacyCategory;
 use Prado\IO\Image\TTIFF;
 use Prado\IO\Image\TRIFFChunkType;
 use Prado\IO\Image\TWebP;
@@ -425,6 +427,80 @@ class TContainerReadWriteTest extends PHPUnit\Framework\TestCase
 		self::assertNull($png->getEXIF());
 	}
 
+	public function testPngTextThatIsNotTheCarrierItClaimsReadsAsAbsent()
+	{
+		// The chunk is well formed and its text decodes; what it holds is not a packet.
+		$png = TPNG::fromString($this->png());
+		$png->setXmpText('this is not an XMP packet');
+		self::assertSame('this is not an XMP packet', $png->getXmpText());
+		self::assertNull($png->getXMP());
+
+		// The same for a raw profile whose hexadecimal decodes to bytes that are not IIM:
+		// the profile is read, the record set is not, and the two must not be confused.
+		$iim = $this->iptc('A real record set')->toBinary(false);
+		foreach (['not IIM' => "\x00\x01\x02\x03", 'IIM' => $iim] as $label => $bytes) {
+			$text = "\niptc\n" . sprintf('%8d', strlen($bytes)) . "\n" . chunk_split(bin2hex($bytes), 72, "\n");
+			$payload = TPNG::IptcKeyword . "\x00" . $text;
+			$fresh = TPNG::fromString($this->png());
+			$fresh->addChunk(new TImageChunk('tEXt', strlen($payload), 0, $payload));
+			if ($label === 'IIM') {
+				self::assertSame('A real record set', $fresh->getIPTC()[TIPTCTags::ObjectName]);
+			} else {
+				self::assertNull($fresh->getIPTC(), $label);
+			}
+		}
+	}
+
+	public function testPngUninflatableCompressedTextReadsAsAbsent()
+	{
+		// A zTXt chunk holds one compression-method byte and then deflated bytes; when
+		// those do not inflate the carrier is absent, not partially read.
+		$png = TPNG::fromString($this->png());
+		$broken = TPNG::IrbKeyword . "\x00" . "\x00" . 'not deflated at all';
+		$png->addChunk(new TImageChunk('zTXt', strlen($broken), 0, $broken));
+		self::assertNull($png->getPhotoshopIRB());
+		self::assertNull($png->getIPTC());
+		self::assertFalse($png->hasIPTC());
+
+		// The same keyword, properly deflated, reads — so it is the inflation that failed.
+		$png->setIPTC($this->iptc('Deflated'));
+		self::assertSame('Deflated', $png->getIPTC()[TIPTCTags::ObjectName]);
+	}
+
+	public function testPngKeepsTheResourceBlockWhenOnlyItsIptcIsDropped()
+	{
+		// The 8BIM block carries more than IPTC; dropping the record set must redact it
+		// out of the block, not throw the block (and the other resources) away.
+		$png = TPNG::fromString($this->png());
+		$irb = new TPhotoshopIRB();
+		$irb->setResource(new TPhotoshopResource(TPhotoshopResource::Url, 'https://example.org/photo'));
+		$irb->setIPTC($this->iptc('PNG title'));
+		$png->setPhotoshopIRB($irb);
+
+		$png->setIPTC(null);
+		$round = TPNG::fromString($png->toBinary());
+		self::assertNull($round->getIPTC());
+		self::assertFalse($round->hasIPTC());
+		$kept = $round->getPhotoshopIRB();
+		self::assertInstanceOf(TPhotoshopIRB::class, $kept);
+		self::assertSame('https://example.org/photo', $kept->getResource(TPhotoshopResource::Url)?->getData());
+		self::assertNull($kept->getResource(TPhotoshopResource::IptcNaa));
+	}
+
+	public function testPngTextChunkWithoutAKeywordSeparatorScrubsAsDescription()
+	{
+		// A writer that omitted the keyword NUL leaves a chunk that is all text: it has no
+		// keyword, so only the Description category reaches it.
+		$png = TPNG::fromString($this->png());
+		$png->addChunk(new TImageChunk('tEXt', 10, 0, 'no keyword'));
+
+		self::assertSame(0, $png->clearPrivateData(TPrivacyCategory::Author));
+		self::assertSame('no keyword', $png->getChunk('tEXt')?->getData());
+
+		self::assertSame(1, $png->clearPrivateData(TPrivacyCategory::Description));
+		self::assertNull($png->getChunk('tEXt'));
+	}
+
 	//
 	// ─── WebP ────────────────────────────────────────────────────────────────
 	//
@@ -694,6 +770,28 @@ class TContainerReadWriteTest extends PHPUnit\Framework\TestCase
 		$round = TGIF::fromString($gif->toBinary());
 		self::assertSame($packet, $round->getXmpText());
 		self::assertFalse($round->getApplicationExtension(TGIF::XmpIdentity)?->getIsRaw());
+	}
+
+	public function testGifACarrierExtensionWithNoPayloadReadsAsAbsent()
+	{
+		// The identity block with nothing after it: the extension is in the file, the
+		// carrier is not.  An empty packet or profile must read as absent rather than as
+		// a zero-byte value a caller would then try to parse or embed.
+		$gif = TGIF::fromString($this->gif());
+		$gif->addExtension(TGIFExtension::application(TGIF::ICCIdentity, ''));
+		$gif->addExtension(TGIFExtension::rawApplication(TGIF::XmpIdentity, ''));
+
+		// Both before and after a compose-and-reparse cycle, which keeps the two blocks.
+		foreach (['authored' => $gif, 'reparsed' => TGIF::fromString($gif->toBinary())] as $state => $subject) {
+			self::assertNotNull($subject->getApplicationExtension(TGIF::ICCIdentity), $state);
+			self::assertSame('', $subject->getApplicationExtension(TGIF::ICCIdentity)?->getApplicationData(), $state);
+			self::assertSame('', $subject->getApplicationExtension(TGIF::XmpIdentity)?->getApplicationData(), $state);
+
+			self::assertNull($subject->getICCProfile(), $state);
+			self::assertFalse($subject->hasICCProfile(), $state);
+			self::assertNull($subject->getXmpText(), $state);
+			self::assertNull($subject->getXMP(), $state);
+		}
 	}
 
 	public function testGifHeaderAccessors()

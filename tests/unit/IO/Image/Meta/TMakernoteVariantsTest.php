@@ -177,6 +177,46 @@ class TMakernoteVariantsTest extends PHPUnit\Framework\TestCase
 		self::assertSame('5', $functions['Custom Function 99']);
 	}
 
+	public function testRicohNestedCameraInfoWithoutTheSurroundingTiff()
+	{
+		// The same note handed over on its own (no surrounding TIFF bytes): the nested
+		// block is addressed within the note, so it still decodes.
+		$camInfo = '[Ricoh Camera Info]' . "\x00"
+			. $this->packIfd([[0x0001, TTIFFDataType::UShort, 1, pack('n', 7)]], true, false);
+		$blockPos = 8 + 2 + 12 + 4;
+		$ifd = $this->packIfd(
+			[[0x2001, TTIFFDataType::Undefined, strlen($camInfo), pack('N', $blockPos)]],
+			true,
+		);
+		$note = "Ricoh\x00\x00\x00" . $ifd . $camInfo;
+
+		$parsed = TMakernote::fromNote($note, 'RICOH');
+		self::assertNotNull($parsed);
+		self::assertSame('Ricoh', $parsed->getVariant());
+		self::assertArrayHasKey('RicohSubIFD', $parsed->getSubIfds());
+		self::assertSame(7, $parsed->getSubIfds()['RicohSubIFD']->getTagValue(0x0001));
+	}
+
+	public function testRicohCameraInfoBlockWithoutItsSignature()
+	{
+		// Tag 0x2001 is there and points at a real block, but the block does not carry
+		// the '[Ricoh Camera Info]' signature: nothing is decoded from it, and the rest
+		// of the note is unaffected.
+		$block = 'NOT THE CAMERA INFO' . "\x00"
+			. $this->packIfd([[0x0001, TTIFFDataType::UShort, 1, pack('n', 7)]], true, false);
+		$blockPos = 8 + 2 + 24 + 4;
+		$ifd = $this->packIfd([
+			[0x0002, TTIFFDataType::UShort, 1, pack('n', 5)],
+			[0x2001, TTIFFDataType::Undefined, strlen($block), pack('N', $blockPos)],
+		], true);
+		$note = "Ricoh\x00\x00\x00" . $ifd . $block;
+
+		$parsed = TMakernote::fromNote($note, 'RICOH', $note, 0, true);
+		self::assertSame('Ricoh', $parsed->getVariant());
+		self::assertSame([], $parsed->getSubIfds());
+		self::assertSame(5, $parsed->getIfd()->getTagValue(0x0002));
+	}
+
 	public function testRicohWithoutTheCameraInfoBlock()
 	{
 		// The Ricoh variant declares a nested sub-IFD, but a note that has no 0x2001

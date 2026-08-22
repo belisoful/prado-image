@@ -55,7 +55,7 @@ class TCompressionFilterTest extends PHPUnit\Framework\TestCase
 
 	public function testLZWEncodeThenDecodeFilterRoundTrip()
 	{
-		$raw = str_repeat('the quick brown fox ', 200) . random_bytes(2000);
+		$raw = str_repeat('the quick brown fox ', 200) . PseudoRandomBytes::bytes(2000, 'filter-1');
 
 		$enc = TStream::fromString($raw);
 		$enc->appendFilter(TLZWFilter::EncodeName, STREAM_FILTER_READ);
@@ -102,7 +102,7 @@ class TCompressionFilterTest extends PHPUnit\Framework\TestCase
 			'A',
 			'AABCC',
 			str_repeat('Q', 300),
-			'AAAAABCDEEEEEE' . str_repeat('Z', 200) . random_bytes(500),
+			'AAAAABCDEEEEEE' . str_repeat('Z', 200) . PseudoRandomBytes::bytes(500, 'filter-2'),
 		];
 		foreach ($inputs as $raw) {
 			$expected = TPackBitsCompressor::compress($raw);
@@ -122,7 +122,7 @@ class TCompressionFilterTest extends PHPUnit\Framework\TestCase
 			'A',
 			'TOBEORNOTTOBEORTOBEORNOT',
 			str_repeat('abcdefghij', 500),   // crosses 9->10->11->12 bit widths
-			random_bytes(8000),
+			PseudoRandomBytes::bytes(8000, 'filter-3'),
 		];
 		foreach ($inputs as $raw) {
 			$expected = TLZWCompressor::compress($raw);

@@ -88,6 +88,18 @@ class TEXIFGpsHelpersTest extends PHPUnit\Framework\TestCase
 		self::assertNull($reparsed->getLongitude());
 	}
 
+	public function testGpsTimestampWithADateStampThatIsNotADate()
+	{
+		// Both tags are there and the time is well formed, but the date stamp is not in
+		// the spec's 'YYYY:MM:DD' shape: no instant is invented from it.
+		$exif = new TEXIF();
+		$gps = $exif->getGpsIfd(true);
+		$gps->setTagValues(29, Prado\IO\Image\TIFF\TTIFFDataType::Ascii, "not-a-date\0");
+		$gps->setTagValues(7, Prado\IO\Image\TIFF\TTIFFDataType::URational, [[14, 1], [30, 1], [5, 1]]);
+		self::assertSame('14:30:05', $exif->getTextByName('GPSTimeStamp'));
+		self::assertNull($exif->getGpsTimestamp());
+	}
+
 	public function testDegreesOnlyCoordinateReads()
 	{
 		// A file storing only whole degrees (count 1) still reads.

@@ -7,6 +7,7 @@ use Prado\IO\Image\GIF\TGIFBlockType;
 use Prado\IO\Image\GIF\TGIFExtension;
 use Prado\IO\Image\GIF\TGIFFrame;
 use Prado\IO\Image\TGIF;
+use Prado\IO\Image\TImageGraphics;
 use Prado\IO\Image\TImageGraphicsMode;
 use Prado\IO\Image\TPrivacyCategory;
 
@@ -71,6 +72,19 @@ class TGIFTest extends PHPUnit\Framework\TestCase
 		imagegif($im);
 		imagedestroy($im);
 		return ob_get_clean();
+	}
+
+	/**
+	 * Returns the Image Descriptor's packed field: the byte after the separator and the
+	 * four geometry words, past the fixed eight bytes of a Graphic Control Extension.
+	 * @param TGIFFrame $frame
+	 */
+	private function packedField(TGIFFrame $frame): int
+	{
+		$binary = $frame->toBinary();
+		$at = $frame->getHasGraphicControl() ? 8 : 0;
+		self::assertSame(chr(TGIFBlockType::ImageSeparator), $binary[$at]);
+		return ord($binary[$at + 9]);
 	}
 
 	//
@@ -261,6 +275,25 @@ class TGIFTest extends PHPUnit\Framework\TestCase
 		self::assertCount(2, $reread->getExtensions(TGIFBlockType::ApplicationLabel));
 	}
 
+	public function testTruncatedLoopBlockReadsAsNoLoopCountAndIsKeptAsWritten()
+	{
+		// The sub-block is a 1-byte id then a 16-bit count; a writer that emitted only the
+		// id leaves no count to read.  The block itself is another writer's data, so it is
+		// preserved rather than repaired or dropped.
+		$gif = TGIF::fromString($this->gdGif());
+		$gif->addExtension(TGIFExtension::application(TGIF::NetscapeIdentity, "\x01"));
+		self::assertNull($gif->getLoopCount());
+
+		$reread = TGIF::fromString($gif->toBinary());
+		self::assertNull($reread->getLoopCount());
+		self::assertSame("\x01", $reread->getApplicationExtension(TGIF::NetscapeIdentity)?->getApplicationData());
+
+		// A whole block in the same place does have a count.
+		$reread->setLoopCount(4);
+		self::assertSame(4, $reread->getLoopCount());
+		self::assertCount(1, $reread->getExtensions(TGIFBlockType::ApplicationLabel));
+	}
+
 	//
 	// ─── Privacy ─────────────────────────────────────────────────────────────
 	//
@@ -408,6 +441,29 @@ class TGIFTest extends PHPUnit\Framework\TestCase
 		self::assertSame("\x01\x02\x00\x00", $frame->getPixels());
 	}
 
+	public function testEmptyLzwDataLeavesNoSubBlocks()
+	{
+		$frame = new TGIFFrame();
+		$frame->setWidth(2);
+		$frame->setHeight(1);
+		$frame->setMinCodeSize(2);
+		$frame->setPixels("\x01\x02");
+		self::assertNotSame([], $frame->getDataSubBlocks());
+
+		// Emptying the data writes no sub-block at all, not a zero-length one — a
+		// zero-length sub-block is the terminator, so an empty block would end the chain
+		// twice.
+		$frame->setLzwData('');
+		self::assertSame([], $frame->getDataSubBlocks());
+		self::assertSame('', $frame->getLzwData());
+		$binary = $frame->toBinary();
+		self::assertSame(chr(2) . "\x00", substr($binary, -2));
+		self::assertSame(12, strlen($binary));   // separator, geometry, packed, code size, terminator
+
+		// The frame still reports its declared pixel count, zero-filled.
+		self::assertSame("\x00\x00", $frame->getPixels());
+	}
+
 	//
 	// ─── Color tables ────────────────────────────────────────────────────────
 	//
@@ -456,6 +512,45 @@ class TGIFTest extends PHPUnit\Framework\TestCase
 
 		$gif->setGlobalColorTable(self::GlobalTable);
 		self::assertSame(self::GlobalTable, TGIF::fromString($gif->toBinary())->getGlobalColorTable());
+	}
+
+	public function testClearingALocalColorTableSendsTheFrameBackToTheGlobalOne()
+	{
+		$gif = TGIF::fromString($this->richGif());
+		$frame = $gif->getFrame(1);
+		self::assertTrue($frame->getHasLocalColorTable());
+		$withTable = strlen($frame->toBinary());
+
+		$frame->setLocalColorTable(null);
+		self::assertNull($frame->getLocalColorTable());
+		self::assertFalse($frame->getHasLocalColorTable());
+
+		// The descriptor drops the local-table flag and its size bits with the table.
+		self::assertSame(0, $this->packedField($frame) & 0x87);
+		self::assertSame($withTable - strlen(self::LocalTable), strlen($frame->toBinary()));
+
+		// So the frame now renders against the file's global table.
+		self::assertSame(self::GlobalTable, $gif->getFramePalette(1));
+		$reread = TGIF::fromString($gif->toBinary());
+		self::assertFalse($reread->getFrame(1)->getHasLocalColorTable());
+		self::assertSame("\x03\x02", $reread->getFrame(1)->getPixels());
+	}
+
+	public function testSortedLocalColorTableFlagIsWrittenAndRead()
+	{
+		$gif = TGIF::fromString($this->richGif());
+		$frame = $gif->getFrame(1);
+		self::assertFalse($frame->getSorted());
+		self::assertSame(0, $this->packedField($frame) & 0x20);
+
+		// The sort flag says the table is ordered by importance; it is the writer's claim
+		// about its own table, so it must survive the trip rather than being normalized.
+		$frame->setSorted(true);
+		self::assertSame(0x20, $this->packedField($frame) & 0x20);
+
+		$reread = TGIF::fromString($gif->toBinary());
+		self::assertTrue($reread->getFrame(1)->getSorted());
+		self::assertSame(self::LocalTable, $reread->getFrame(1)->getLocalColorTable());
 	}
 
 	//
@@ -591,6 +686,76 @@ class TGIFTest extends PHPUnit\Framework\TestCase
 		// Frame 2 is indexes 3 then 2 against the local table.
 		self::assertSame(0xAABBCC, imagecolorat($image, 0, 0) & 0xFFFFFF);
 		self::assertSame(0x778899, imagecolorat($image, 1, 0) & 0xFFFFFF);
+		imagedestroy($image);
+	}
+
+	public function testIndexesPastTheEndOfTheTableRenderAsEntryZero()
+	{
+		// A frame may hold indexes its table has no entry for — a code size of two allows
+		// four indexes against a two-color table.  Those pixels take entry zero rather
+		// than reading past the table.
+		$frame = new TGIFFrame();
+		$frame->setWidth(3);
+		$frame->setHeight(1);
+		$frame->setPixels("\x01\x03\x00");
+
+		$image = $frame->getImage("\xff\x00\x00" . "\x00\xff\x00", TImageGraphicsMode::GD);
+		self::assertSame(0x00FF00, imagecolorat($image, 0, 0) & 0xFFFFFF);   // index 1: green
+		self::assertSame(0xFF0000, imagecolorat($image, 1, 0) & 0xFFFFFF);   // index 3: past the end
+		self::assertSame(0xFF0000, imagecolorat($image, 2, 0) & 0xFFFFFF);   // index 0: red
+		imagedestroy($image);
+	}
+
+	public function testAPaletteTooShortForOneColorRendersFromWhatItHas()
+	{
+		// Less than a whole triplet is not a color table; every index then takes what
+		// stands at the start of it.  GD warns about the bytes the triplet is missing;
+		// the point of the test is that the render is attempted, not abandoned.
+		$frame = new TGIFFrame();
+		$frame->setWidth(1);
+		$frame->setHeight(1);
+		$frame->setPixels("\x05");
+
+		$image = @$frame->getImage("\xaa\xbb", TImageGraphicsMode::GD);
+		self::assertSame([1, 1], TImageGraphics::getSize($image));
+		self::assertSame(0xAABB00, imagecolorat($image, 0, 0) & 0xFFFFFF);
+		imagedestroy($image);
+	}
+
+	public function testSetImageOnAnInterlacedFrameStoresTheRowsInterlaced()
+	{
+		// The interlace flag is the frame's own, kept as authored; quantizing an image
+		// into it must write the rows in the four-pass order the flag promises.
+		$source = imagecreatetruecolor(8, 8);
+		for ($y = 0; $y < 8; $y++) {
+			imagefilledrectangle($source, 0, $y, 7, $y, imagecolorallocate($source, $y * 30, 255 - $y * 30, 60));
+		}
+
+		$plain = new TGIFFrame();
+		$plain->setImage($source);
+
+		$interlaced = new TGIFFrame();
+		$interlaced->setInterlaced(true);
+		$interlaced->setImage($source);
+		imagedestroy($source);
+
+		// Same pixels, laid down in a different order: the stored bytes differ, and
+		// getPixels() undoes the interlace to give the rows back top to bottom.
+		self::assertTrue($interlaced->getInterlaced());
+		self::assertSame($plain->getPixels(), $interlaced->getPixels());
+		self::assertNotSame($plain->getLzwData(), $interlaced->getLzwData());
+		self::assertSame(
+			TGIFFrame::interlace($plain->getPixels(), 8, 8),
+			TGIFLZWCompressor::decompress($interlaced->getLzwData(), $interlaced->getMinCodeSize()),
+		);
+
+		// And the rows still read back as the colors they were drawn with.
+		$image = $interlaced->getImage((string) $interlaced->getLocalColorTable(), TImageGraphicsMode::GD);
+		for ($y = 0; $y < 8; $y++) {
+			$rgb = imagecolorat($image, 0, $y) & 0xFFFFFF;
+			self::assertEqualsWithDelta($y * 30, ($rgb >> 16) & 0xFF, 8, "row $y red");
+			self::assertEqualsWithDelta(255 - $y * 30, ($rgb >> 8) & 0xFF, 8, "row $y green");
+		}
 		imagedestroy($image);
 	}
 

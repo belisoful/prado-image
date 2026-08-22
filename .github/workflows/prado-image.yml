@@ -1,5 +1,5 @@
 name: PRADO Image Extension
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
 jobs:
   composerext:
     name: Image (PHP ${{ matrix.php-versions }}${{ matrix.imagick && ', GD + ImageMagick' || ', GD only' }})
@@ -76,3 +76,42 @@ jobs:
       - name: Enforce coverage
         if: ${{ matrix.imagick }}
         run: php tests/test_tools/coverage-gate.php build/logs/clover.xml
+
+  branches:
+    # Branch coverage lives beside the rest of CI rather than in its own workflow, but it
+    # cannot run on every push: instrumenting every branch takes minutes where the suite
+    # takes seconds.  It runs where it pays for itself — on a pull request, on a commit
+    # that lands on main, and on demand — so a failure always names the change that caused
+    # it.  Line coverage above says a line ran; this says the decision on it went both ways.
+    name: Branch coverage (GD and ImageMagick)
+    if: ${{ github.event_name != 'push' || github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: prado-image
+
+    steps:
+      - name: Checkout extension
+        uses: actions/checkout@v5
+        with:
+          path: prado-image
+
+      - name: Setup PHP, with composer and extensions
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: ctype, dom, gd, iconv, imagick, intl, json, mbstring, pcre, spl
+          # Branch data comes from xdebug; pcov records lines only.
+          coverage: xdebug
+
+      - name: Install Composer dependencies
+        run: composer install --no-progress --prefer-dist
+
+      - name: Measure branch coverage
+        env:
+          XDEBUG_MODE: coverage
+        run: php -d memory_limit=MEMLIMIT vendor/bin/phpunit --testsuite unit --path-coverage --coverage-php build/logs/coverage.php
+
+      - name: Enforce branch coverage
+        run: php -d memory_limit=512M tests/test_tools/branch-gate.php build/logs/coverage.php

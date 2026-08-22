@@ -7,6 +7,7 @@ use Prado\IO\Image\Meta\TIPTC;
 use Prado\IO\Image\Meta\TIPTCTags;
 use Prado\IO\Image\TImageGraphics;
 use Prado\IO\Image\TImageGraphicsMode;
+use Prado\IO\TStream;
 
 class TIPTCTest extends PHPUnit\Framework\TestCase
 {
@@ -309,9 +310,12 @@ class TIPTCTest extends PHPUnit\Framework\TestCase
 		imagecolorset($refImage, 0, 0, 0, 0);
 		imagecolorset($refImage, 1, 255, 255, 255);
 
+		// Deterministic noise: a random pattern would make the encoded caption -- and the
+		// codec branches it exercises -- differ from run to run.
+		$noise = PseudoRandomBytes::bytes(128 * 460, 'iptc-caption');
 		for ($y = 0; $y < 128; $y++) {
 			for ($x = 0; $x < 460; $x++) {
-				imagesetpixel($refImage, $x, $y, (rand() & 1) ? $white : $black);
+				imagesetpixel($refImage, $x, $y, (ord($noise[$y * 460 + $x]) & 1) ? $white : $black);
 			}
 		}
 		$this->obj->setRasterizedCaptionImage($refImage);
@@ -968,5 +972,171 @@ class TIPTCTest extends PHPUnit\Framework\TestCase
 		self::assertFalse($this->obj->contains(TIPTCTags::RasterizedCaption));
 
 		imagedestroy($source);
+	}
+
+	public function testReadFromANonSeekableStream()
+	{
+		// A stream that cannot be seeked has no position to remember and no position to
+		// restore: the window has to start where the stream already is.  The stub throws
+		// from both tell() and seek(), so the read only succeeds if neither is called.
+		$payload = TIPTC::tagBinary(TIPTCTags::ObjectName, 'Streamed Title')
+			. TIPTC::tagBinary(TIPTCTags::City, 'Bergen');
+		$block = new TIPTCNonSeekableStream($payload);
+
+		self::assertTrue($this->obj->read($block));
+		self::assertSame('Streamed Title', $this->obj[TIPTCTags::ObjectName]);
+		self::assertSame('Bergen', $this->obj[TIPTCTags::City]);
+		// The block variable is replaced by the bytes the window yielded.
+		self::assertSame($payload, $block);
+	}
+
+	public function testShortValuesArePaddedToTheirDatasetMinimum()
+	{
+		// A numeric left-zero dataset is padded on the left with '0' ...
+		$this->obj['ActionAdvised'] = '5';
+		self::assertSame('05', $this->obj['ActionAdvised']);
+		$this->obj['AudioDuration'] = '120';
+		self::assertSame('000120', $this->obj['AudioDuration']);
+
+		// ... while every other dataset is padded on the right with spaces.
+		$this->obj['LanguageIdentifier'] = 'e';
+		self::assertSame('e ', $this->obj['LanguageIdentifier']);
+		$this->obj['ObjectTypeReference'] = '1';
+		self::assertSame('1  ', $this->obj['ObjectTypeReference']);
+		// The same holds for an undefined-type dataset, which is not character filtered.
+		$this->obj['RasterizedCaption'] = "\x01\x02";
+		self::assertSame(str_pad("\x01\x02", 7360, ' '), $this->obj['RasterizedCaption']);
+	}
+
+	public function testAnUnparsableDateBecomesTheCurrentDate()
+	{
+		// Neither an IPTC date nor anything strtotime() understands: the dataset falls
+		// back to today rather than storing the text.
+		$this->obj['DateCreated'] = 'not a date at all';
+		self::assertSame(date('Ymd'), $this->obj['DateCreated']);
+
+		// A date it does understand is converted, not replaced.
+		$this->obj['ReleaseDate'] = '17 July 2026';
+		self::assertSame('20260717', $this->obj['ReleaseDate']);
+	}
+
+	public function testReadFromAStreamAtAnExplicitOffset()
+	{
+		// [source, length, offset] against a seekable stream: the window must start at the
+		// offset given, not at wherever the stream happens to sit, and the surrounding
+		// parse position must be restored afterwards.
+		$iptc = new TIPTC();
+		$iptc[TIPTCTags::ByLine] = ['Jane Doe'];
+		$iptc[TIPTCTags::City] = 'Bergen';
+		$block = $iptc->toBinary(false);
+
+		$lead = str_repeat("\xEE", 37);
+		$stream = TStream::fromString($lead . $block . str_repeat("\xDD", 11));
+		$stream->seek(5);   // the surrounding parse sits somewhere else entirely
+
+		$read = new TIPTC();
+		$source = [$stream, strlen($block), strlen($lead)];
+		self::assertTrue($read->read($source));
+		self::assertSame(['Jane Doe'], $read[TIPTCTags::ByLine]);
+		self::assertSame('Bergen', $read[TIPTCTags::City]);
+		self::assertSame(5, $stream->tell(), 'the surrounding position is restored');
+
+		// Without the offset the window would start at the stream position, which is not
+		// an IIM block at all -- so the explicit offset is what made the read succeed.
+		$stream->seek(5);
+		$noOffset = new TIPTC();
+		$plain = [$stream, strlen($block), null];
+		self::assertFalse($noOffset->read($plain));
+	}
+}
+
+/**
+ * A read-only stream that cannot be seeked and refuses to report its position, so
+ * {@see TIPTC::read()} must take its window from where the stream already is.
+ */
+class TIPTCNonSeekableStream implements Psr\Http\Message\StreamInterface
+{
+	private int $_position = 0;
+
+	public function __construct(private string $buffer)
+	{
+	}
+
+	public function read(int $length): string
+	{
+		$bytes = substr($this->buffer, $this->_position, $length);
+		$this->_position += strlen($bytes);
+		return $bytes;
+	}
+
+	public function eof(): bool
+	{
+		return $this->_position >= strlen($this->buffer);
+	}
+
+	public function getContents(): string
+	{
+		$bytes = substr($this->buffer, $this->_position);
+		$this->_position = strlen($this->buffer);
+		return $bytes;
+	}
+
+	public function __toString(): string
+	{
+		return $this->buffer;
+	}
+
+	public function close(): void
+	{
+	}
+
+	public function detach()
+	{
+		return null;
+	}
+
+	public function getSize(): ?int
+	{
+		return strlen($this->buffer);
+	}
+
+	public function tell(): int
+	{
+		throw new RuntimeException('the position of a non-seekable stream is not reported');
+	}
+
+	public function isSeekable(): bool
+	{
+		return false;
+	}
+
+	public function seek(int $offset, int $whence = SEEK_SET): void
+	{
+		throw new RuntimeException('not seekable');
+	}
+
+	public function rewind(): void
+	{
+		throw new RuntimeException('not seekable');
+	}
+
+	public function isWritable(): bool
+	{
+		return false;
+	}
+
+	public function write(string $string): int
+	{
+		throw new RuntimeException('not writable');
+	}
+
+	public function isReadable(): bool
+	{
+		return true;
+	}
+
+	public function getMetadata(?string $key = null)
+	{
+		return $key === null ? [] : null;
 	}
 }

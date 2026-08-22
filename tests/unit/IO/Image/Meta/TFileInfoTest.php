@@ -165,6 +165,80 @@ class TFileInfoTest extends PHPUnit\Framework\TestCase
 		self::assertSame('First', $reparsed->getIPTC()[TIPTCTags::ObjectName]);
 	}
 
+	public function testFromJpegReadsArrayValuedXmpPropertiesAndStructures()
+	{
+		$jpeg = $this->jpeg();
+		$xmp = TXMP::blank();
+		$xmp->setProperty(TXMP::NS_PHOTOSHOP, 'City', ['Bergen', 'Oslo'], 'Bag');   // an array field takes its first item
+		$xmp->setProperty(TXMP::NS_PHOTOSHOP, 'Credit', ['by' => 'nobody']);        // a structure has no first item
+		$xmp->setProperty(TXMP::NS_BJ, 'JobRef', ['name' => 'Job 42']);
+		$jpeg->setXMP($xmp);
+
+		$info = TFileInfo::fromJpeg(TJPEG::fromString($jpeg->toBinary()));
+		self::assertSame('Bergen', $info['city']);
+		self::assertNull($info['credit']);
+		self::assertSame('Job 42', $info['jobname']);
+
+		// A job reference structure with no name field names no job.
+		$other = $this->jpeg();
+		$otherXmp = TXMP::blank();
+		$otherXmp->setProperty(TXMP::NS_BJ, 'JobRef', ['id' => '42']);
+		$other->setXMP($otherXmp);
+		self::assertNull(TFileInfo::fromJpeg(TJPEG::fromString($other->toBinary()))['jobname']);
+	}
+
+	public function testSupplementalCategoriesRoundTripThroughXmpAndIptc()
+	{
+		$jpeg = $this->jpeg();
+		$info = new TFileInfo();
+		$info['supplementalcategories'] = ['news', 'wire'];
+		$info->applyTo($jpeg);
+
+		$reparsed = TJPEG::fromString($jpeg->toBinary());
+		self::assertSame(['news', 'wire'], $reparsed->getXMP()->getProperty(TXMP::NS_PHOTOSHOP, 'SupplementalCategories'));
+		self::assertSame(['news', 'wire'], $reparsed->getIPTC()[TIPTCTags::SupplementalCategories]);
+		self::assertSame(['news', 'wire'], TFileInfo::fromJpeg($reparsed)['supplementalcategories']);
+
+		// An empty list removes the property instead of writing an empty collection.
+		$empty = $this->jpeg();
+		(new TFileInfo())->applyTo($empty);
+		$stripped = TJPEG::fromString($empty->toBinary());
+		self::assertNull($stripped->getXMP()->getProperty(TXMP::NS_PHOTOSHOP, 'SupplementalCategories'));
+		self::assertNull(TFileInfo::fromJpeg($stripped)['supplementalcategories']);
+	}
+
+	public function testFromJpegReadsTheMarkedRightsProperty()
+	{
+		// xmpRights:Marked is the only store here, so the status comes from it alone.
+		$jpeg = $this->jpeg();
+		$xmp = TXMP::blank();
+		$xmp->setProperty(TXMP::NS_RIGHTS, 'Marked', true);
+		$jpeg->setXMP($xmp);
+		self::assertSame(
+			TFileInfo::Copyrighted,
+			TFileInfo::fromJpeg(TJPEG::fromString($jpeg->toBinary()))['copyrightstatus'],
+		);
+
+		// The comparison is case-insensitive, and anything else is public domain.
+		$lower = $this->jpeg();
+		$lowerXmp = TXMP::blank();
+		$lowerXmp->setProperty(TXMP::NS_RIGHTS, 'Marked', 'true');
+		$lower->setXMP($lowerXmp);
+		self::assertSame(
+			TFileInfo::Copyrighted,
+			TFileInfo::fromJpeg(TJPEG::fromString($lower->toBinary()))['copyrightstatus'],
+		);
+
+		$unmarked = $this->jpeg();
+		$unmarkedXmp = TXMP::blank();
+		$unmarkedXmp->setProperty(TXMP::NS_RIGHTS, 'Marked', false);
+		$unmarked->setXMP($unmarkedXmp);
+		self::assertSame(
+			TFileInfo::PublicDomain,
+			TFileInfo::fromJpeg(TJPEG::fromString($unmarked->toBinary()))['copyrightstatus'],
+		);
+	}
+
 	public function testInvalidDateThrows()
 	{
 		$info = new TFileInfo();

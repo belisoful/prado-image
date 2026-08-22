@@ -782,4 +782,74 @@ class TICCProfileTest extends PHPUnit\Framework\TestCase
 
 		self::assertNull(TICCProfile::fromStream('not a profile'));
 	}
+
+	public function testUnterminatedTextTagReadsToTheEndOfTheTag()
+	{
+		// A `text` tag is NUL terminated by the specification, but a writer that left the
+		// terminator off still has a length: the text is then the whole tag, not null and
+		// not the terminated prefix of the next tag's bytes.
+		$profile = TICCProfile::parse(ICCProfileBuilder::build([
+			'desc' => ICCProfileBuilder::descTag('Unterminated'),
+			'cprt' => 'text' . "\0\0\0\0" . 'No terminator here',
+		]));
+		self::assertSame('text', $profile->getTagType('cprt'));
+		self::assertSame('No terminator here', $profile->getCopyright());
+
+		// The terminated form stops at the NUL, which is what makes the two distinct.
+		$terminated = TICCProfile::parse(ICCProfileBuilder::build([
+			'cprt' => ICCProfileBuilder::textTag('No terminator here'),
+		]));
+		self::assertSame('No terminator here', $terminated->getCopyright());
+		self::assertSame(
+			strlen((string) $profile->getTag('cprt')) + 1,
+			strlen((string) $terminated->getTag('cprt')),
+		);
+	}
+
+	public function testNewTextTagTakesTheTypeItsVersionCallsFor()
+	{
+		// A tag that does not exist yet has no type to keep, so the profile's version
+		// decides: a version 2 profile writes the textDescriptionType ...
+		$v2 = TICCProfile::parse(ICCProfileBuilder::sRgb());
+		self::assertSame(2, $v2->getVersionMajor());
+		self::assertNull($v2->getTagType('dmnd'));
+		$v2->setTagText('dmnd', 'Prado device');
+		self::assertSame('desc', $v2->getTagType('dmnd'));
+		self::assertSame('Prado device', TICCProfile::parse($v2->toBinary())->getTagText('dmnd'));
+
+		// ... and a version 4 profile writes the multiLocalizedUnicodeType.
+		$v4 = TICCProfile::parse(ICCProfileBuilder::wideGamut());
+		self::assertSame(4, $v4->getVersionMajor());
+		$v4->setTagText('dmnd', 'Prado device');
+		self::assertSame('mluc', $v4->getTagType('dmnd'));
+		self::assertSame('Prado device', TICCProfile::parse($v4->toBinary())->getTagText('dmnd'));
+
+		// A tag holding something that is not text has no text type to keep either: it
+		// is replaced by the version's text type rather than left as it was.
+		self::assertSame('XYZ ', $v2->getTagType('wtpt'));
+		$v2->setTagText('wtpt', 'not a white point');
+		self::assertSame('desc', $v2->getTagType('wtpt'));
+		self::assertSame('not a white point', $v2->getTagText('wtpt'));
+		self::assertNull($v2->getTagXYZ('wtpt'));
+	}
+
+	public function testEmptyXyzListWritesAnEmptyTagRatherThanAMalformedOne()
+	{
+		// An empty list is not a single triplet: the tag has to be written as a typed
+		// XYZType with no XYZNumbers in it, not as one triplet of missing values.
+		$profile = TICCProfile::parse(ICCProfileBuilder::sRgb());
+		$profile->setTagXYZ('bkpt', []);
+		self::assertSame('XYZ ', $profile->getTagType('bkpt'));
+		self::assertSame(8, strlen((string) $profile->getTag('bkpt')));
+		self::assertSame([], $profile->getTagXYZAll('bkpt'));
+		self::assertNull($profile->getTagXYZ('bkpt'));
+
+		$round = TICCProfile::parse($profile->toBinary());
+		self::assertSame([], $round->getTagXYZAll('bkpt'));
+		// The one-triplet shorthand still writes one triplet, so the empty case is not
+		// simply "everything is a list".
+		$profile->setTagXYZ('bkpt', [0.0, 0.0, 0.0]);
+		self::assertSame(20, strlen((string) $profile->getTag('bkpt')));
+		self::assertCount(1, (array) $profile->getTagXYZAll('bkpt'));
+	}
 }

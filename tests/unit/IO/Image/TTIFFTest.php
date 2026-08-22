@@ -50,6 +50,23 @@ class TTIFFTest extends PHPUnit\Framework\TestCase
 		self::assertNull($tiff->getTiff());
 		self::assertSame('', $tiff->toBinary());
 		self::assertSame([], $tiff->getReservedSpaces());
+		// No IFD0 to read a raster geometry from, so there is no image to answer.
+		self::assertFalse($tiff->getImage());
+	}
+
+	public function testIccProfileTypedAsByteValues()
+	{
+		// Writers that type tag 34675 as BYTE rather than UNDEFINED deliver the profile
+		// as an integer array, which must still read back as the profile's bytes.
+		$profile = 'ICC-PROFILE-AS-BYTES';
+		$exif = new TEXIF();
+		$exif->getIfd0()->setTagValues(TTIFF::WidthTag, TTIFFDataType::ULong, [16]);
+		$exif->getIfd0()->setTagValues(TTIFF::HeightTag, TTIFFDataType::ULong, [16]);
+		$exif->getIfd0()->setTagValues(TTIFF::ICCTag, TTIFFDataType::UByte, array_map('ord', str_split($profile)));
+
+		$tiff = TTIFF::fromString($exif->getTiff()->toBinary());
+		self::assertSame(TTIFFDataType::UByte, $tiff->getEXIF()->getIfd0()->getTag(TTIFF::ICCTag)->getType());
+		self::assertSame($profile, $tiff->getICCProfile());
 	}
 
 	public function testSetImageOnAnUnloadedTiffBuildsTheStructure()

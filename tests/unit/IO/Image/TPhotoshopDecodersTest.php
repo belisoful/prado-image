@@ -140,6 +140,32 @@ class TPhotoshopDecodersTest extends PHPUnit\Framework\TestCase
 		self::assertNull($decoded['fileVersion']);
 	}
 
+	public function testBooleanAndIntegerDecodersOnUndersizedPayloads()
+	{
+		// An empty payload has no flag byte to read, and fewer than four bytes is not an
+		// integer: both answer null rather than a made-up value.
+		self::assertNull((new TPhotoshopResource(TPhotoshopResource::CopyrightFlag))->decodeBoolean());
+		self::assertNull((new TPhotoshopResource(TPhotoshopResource::GlobalAngle, "\x00\x00\x1E"))->decodeInteger());
+
+		self::assertFalse((new TPhotoshopResource(TPhotoshopResource::CopyrightFlag, "\x00"))->decodeBoolean());
+		self::assertTrue((new TPhotoshopResource(TPhotoshopResource::CopyrightFlag, "\x01"))->decodeBoolean());
+		self::assertSame(30, (new TPhotoshopResource(TPhotoshopResource::GlobalAngle, pack('N', 30)))->decodeInteger());
+	}
+
+	public function testVersionInfoWithAUnicodeStringCutMidCodeUnit()
+	{
+		// The writer string declares three UTF-16 code units but only three bytes follow,
+		// so the decode fails and the string reads as empty instead of as mojibake.
+		$data = pack('N', 1) . "\x01" . pack('N', 3) . "\x00A\x00";
+		$decoded = (new TPhotoshopResource(TPhotoshopResource::VersionInfo, $data))->decodeVersionInfo();
+
+		self::assertSame(1, $decoded['version']);
+		self::assertTrue($decoded['hasRealMergedData']);
+		self::assertSame('', $decoded['writer']);
+		self::assertSame('', $decoded['reader']);
+		self::assertNull($decoded['fileVersion']);
+	}
+
 	public function testLegacy8BimHelpers()
 	{
 		$iptcPayload = "\x1C\x02\x05\x00\x04Test";

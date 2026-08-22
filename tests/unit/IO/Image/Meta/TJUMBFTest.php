@@ -300,4 +300,78 @@ class TJUMBFTest extends PHPUnit\Framework\TestCase
 		self::assertNull($parsed->getContentType());
 		self::assertNull($parsed->getContentData());
 	}
+
+	public function testConstructorDerivesTogglesFromTheOptionalArguments()
+	{
+		// Handed the optional fields but no toggles, the constructor derives the byte
+		// from what it was given -- each field raising only its own bit.
+		$id = new TJUMBFDescription(TJUMBFDescription::JsonUuid, null, null, 0x12345678);
+		self::assertSame(
+			TJUMBFDescription::RequestableToggle | TJUMBFDescription::IdToggle,
+			$id->getToggles(),
+		);
+
+		$signature = new TJUMBFDescription(TJUMBFDescription::JsonUuid, null, null, null, str_repeat("\x7E", 32));
+		self::assertSame(
+			TJUMBFDescription::RequestableToggle | TJUMBFDescription::SignatureToggle,
+			$signature->getToggles(),
+		);
+
+		// All three together, and the derived toggles really drive what is packed.
+		$full = new TJUMBFDescription(TJUMBFDescription::XmlUuid, 'ctor-label', null, 0x12345678, str_repeat("\x7E", 32));
+		self::assertSame(0x0F, $full->getToggles());
+
+		$reparsed = TJUMBFDescription::parse($full->toBinary());
+		self::assertNotFalse($reparsed);
+		self::assertSame('ctor-label', $reparsed->getLabel());
+		self::assertSame(0x12345678, $reparsed->getId());
+		self::assertSame(str_repeat("\x7E", 32), $reparsed->getSignature());
+
+		// An explicit toggles byte is used as given, whatever the other arguments say.
+		$explicit = new TJUMBFDescription(TJUMBFDescription::XmlUuid, 'quiet', 0x01, 9, str_repeat("\x01", 32));
+		self::assertSame(0x01, $explicit->getToggles());
+		self::assertSame(TJUMBFDescription::XmlUuid . "\x01", $explicit->toBinary());
+	}
+
+	public function testUnterminatedLabelRunsToTheEndOfThePayload()
+	{
+		// A writer that left the label's NUL off: the label is everything that remains,
+		// and the read position lands at the end, so the id its toggle promises has no
+		// room left and is reported absent rather than read out of the label's bytes.
+		$toggles = TJUMBFDescription::RequestableToggle | TJUMBFDescription::LabelToggle | TJUMBFDescription::IdToggle;
+		$payload = TJUMBFDescription::XmlUuid . chr($toggles) . 'unterminated';
+
+		$description = TJUMBFDescription::parse($payload);
+		self::assertNotFalse($description);
+		self::assertSame('unterminated', $description->getLabel());
+		self::assertNull($description->getId());
+		self::assertNull($description->getSignature());
+
+		// Composing it back supplies the terminator the payload was missing.
+		self::assertSame(
+			TJUMBFDescription::XmlUuid . chr($toggles) . "unterminated\0",
+			$description->toBinary(),
+		);
+	}
+
+	public function testUnparsableDescriptionBoxLeavesTheBoxWithoutADescription()
+	{
+		// A 'jumd' child too short to hold the UUID and toggles is not a description:
+		// the superbox reports none rather than a half-read one, and its content is
+		// still readable.
+		self::assertFalse(TJUMBFDescription::parse('short'));
+
+		$box = new TJUMBFBox(TJUMBFBox::SuperBox, '', [
+			new TJUMBFBox(TJUMBFBox::DescriptionBox, 'short'),
+			new TJUMBFBox(TJUMBFBox::XmlBox, '<a/>'),
+		]);
+		self::assertNull($box->getDescription());
+		self::assertNull($box->getLabel());
+		self::assertSame('<a/>', $box->getContentData());
+
+		$parsed = TJUMBFBox::parse($box->toBinary());
+		self::assertNotFalse($parsed);
+		self::assertNull($parsed->getDescription());
+		self::assertSame('<a/>', $parsed->getContentData());
+	}
 }

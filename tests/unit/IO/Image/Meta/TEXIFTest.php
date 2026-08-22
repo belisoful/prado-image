@@ -1,5 +1,6 @@
 <?php
 
+use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\IO\Image\Meta\TEXIF;
 use Prado\IO\Image\Meta\TEXIFTags;
 use Prado\IO\Image\Meta\TIPTC;
@@ -243,6 +244,80 @@ class TEXIFTest extends PHPUnit\Framework\TestCase
 		self::assertSame('PradoCam', $scanned->getMake());
 		self::assertSame(4096, $scanned->getThumbnailIfd()->getTagValue(TEXIF::ThumbnailLengthTag));
 		self::assertNull($scanned->getThumbnail());
+	}
+
+	public function testScanStreamToleratesAThumbnailRunningPastTheEnd()
+	{
+		// The thumbnail pointer is inside the file but its length is not: the seek
+		// succeeds and the read hits the end, which the scan tolerates exactly as it
+		// tolerates a pointer that never lands in the file at all.
+		$ifd1Offset = 8 + 18;              // header + a one-entry IFD0
+		$makeOffset = $ifd1Offset + 30;    // + a two-entry IFD1
+		$ifd0 = $this->packIfd([[271, TTIFFDataType::Ascii, 9, pack('N', $makeOffset)]], $ifd1Offset);
+		$ifd1 = $this->packIfd([
+			[TEXIF::ThumbnailOffsetTag, TTIFFDataType::ULong, 1, pack('N', $makeOffset + 4)],
+			[TEXIF::ThumbnailLengthTag, TTIFFDataType::ULong, 1, pack('N', 4096)],
+		], 0);
+		$tiff = "MM\x00\x2A" . pack('N', 8) . $ifd0 . $ifd1 . "PradoCam\0";
+		self::assertGreaterThan($makeOffset + 4, strlen($tiff));
+
+		$scanned = TEXIF::scanStream(TStream::fromString($tiff));
+		self::assertSame('PradoCam', $scanned->getMake());
+		self::assertSame(4096, $scanned->getThumbnailIfd()->getTagValue(TEXIF::ThumbnailLengthTag));
+		self::assertNull($scanned->getThumbnail());
+	}
+
+	public function testScanStreamRejectsASourceThatIsNoStreamAtAll()
+	{
+		try {
+			TEXIF::scanStream('MM\x00\x2A raw bytes are not a stream');
+			self::fail('scanStream() accepted a string source');
+		} catch (TInvalidDataTypeException $e) {
+			self::assertSame('streamio_source_invalid', $e->getErrorCode());
+		}
+	}
+
+	public function testIsMetaTurnedBackOffRestoresTheExifSignature()
+	{
+		$exif = new TEXIF();
+		$exif->setIsMeta(true);
+		self::assertSame(TEXIF::MetaSignature, $exif->getSignature());
+
+		$exif->setIsMeta(false);
+		self::assertFalse($exif->getIsMeta());
+		self::assertSame(TEXIF::ExifSignature, $exif->getSignature());
+		self::assertStringStartsWith(TEXIF::ExifSignature, $exif->toBinary());
+		self::assertFalse(TEXIF::fromSegment($exif->toBinary())->getIsMeta());
+	}
+
+	public function testUnparsableEmbeddedCarriersReadAsAbsent()
+	{
+		// The carrier tags are present but hold bytes none of the parsers accept: the
+		// accessors answer null rather than handing back a broken object.
+		$exif = new TEXIF();
+		$exif->getIfd0()->setTagValues(TEXIF::IptcTag, TTIFFDataType::Undefined, 'not an IIM record at all');
+		$exif->getIfd0()->setTagValues(TEXIF::XmpTag, TTIFFDataType::UByte, array_map('ord', str_split('<not-well-formed')));
+		$exif->getIfd0()->setTagValues(TEXIF::PimTag, TTIFFDataType::Undefined, 'NotPrintIM entries');
+
+		self::assertNotNull($exif->getIfd0()->getTag(TEXIF::IptcTag));
+		self::assertNull($exif->getIPTC());
+		self::assertSame('<not-well-formed', $exif->getXmpText());
+		self::assertNull($exif->getXMP());
+		self::assertSame('NotPrintIM entries', $exif->getPimData());
+		self::assertNull($exif->getPIM());
+	}
+
+	public function testMakeAndModelAbsentOrNotText()
+	{
+		$exif = new TEXIF();
+		self::assertNull($exif->getMake());
+		self::assertNull($exif->getModel());
+
+		// Present but written with a numeric type: still not a make or model string.
+		$exif->getIfd0()->setTagValues(271, TTIFFDataType::UShort, [1, 2]);
+		$exif->getIfd0()->setTagValues(272, TTIFFDataType::ULong, [3]);
+		self::assertNull($exif->getMake());
+		self::assertNull($exif->getModel());
 	}
 
 	public function testSubIfdPointerWithoutAChildIsNotFabricated()

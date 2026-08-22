@@ -638,6 +638,19 @@ class TImageGraphicsTest extends PHPUnit\Framework\TestCase
 		self::assertSame("\x00\x00\x01\x01\x00\x00\x01\x01", $mono);
 	}
 
+	public function testMonoPixelsImagickFlatImage()
+	{
+		$this->requireImagick();
+		// A flat image quantizes to one level, so the midpoint of the levels present says
+		// nothing about it: an all-black canvas comes back all-white if the threshold
+		// follows the quantized levels instead of a fixed mid-grey.
+		$black = TImageGraphics::fromRgbPixels(str_repeat("\x00\x00\x00", 6), 3, 2, TImageGraphicsMode::Imagick);
+		self::assertSame(str_repeat("\x00", 6), TImageGraphics::monoPixels($black, false));
+
+		$white = TImageGraphics::fromRgbPixels(str_repeat("\xFF\xFF\xFF", 6), 3, 2, TImageGraphicsMode::Imagick);
+		self::assertSame(str_repeat("\x01", 6), TImageGraphics::monoPixels($white, false));
+	}
+
 	public function testPaletteQuantizeImagick()
 	{
 		$this->requireImagick();

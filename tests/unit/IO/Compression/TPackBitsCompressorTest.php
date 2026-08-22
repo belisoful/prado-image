@@ -30,7 +30,7 @@ class TPackBitsCompressorTest extends PHPUnit\Framework\TestCase
 
 	public function testRoundTripMixed()
 	{
-		$data = 'AAAAABCDEEEEEEFG' . str_repeat('Z', 300) . random_bytes(500);
+		$data = 'AAAAABCDEEEEEEFG' . str_repeat('Z', 300) . PseudoRandomBytes::bytes(500, 'packbits-1');
 		self::assertSame($data, TPackBitsCompressor::decompress(TPackBitsCompressor::compress($data)));
 	}
 

@@ -75,6 +75,37 @@ class TPIMPictureInfoTest extends PHPUnit\Framework\TestCase
 		self::assertSame("\x0A\x0B\x0C\x0D", $reparsed->getEntry(0x0002));
 	}
 
+	public function testLittleEndianBlockWithTrailingPadding()
+	{
+		// A little-endian PrintIM block padded past its last entry: no count position
+		// makes the entries fill the block exactly, so the parser falls through to the
+		// second pass that accepts a count whose entries merely fit.
+		$entry = "\x01\x00" . "\x16\x00\x16\x00";                       // tag 0x0001, four data bytes
+		$data = TPIM::Signature . "0250\0" . "\x01\x00" . $entry . "\xAA\xBB\xCC";
+
+		$pim = TPIM::parse($data, false);
+		self::assertNotFalse($pim);
+		self::assertSame('0250', $pim->getVersion());
+		self::assertCount(1, $pim->getEntries());
+		self::assertSame(0x0001, $pim->getEntries()[0]['tag']);
+		// Read little-endian: the same four bytes a big-endian reader calls 0x16001600.
+		self::assertSame(0x00160016, $pim->getEntryValue(0x0001));
+
+		// Editing keeps the parsed byte order: an integer packs little-endian too.
+		$pim->setEntry(0x0002, 0x01020304);
+		self::assertSame("\x04\x03\x02\x01", $pim->getEntry(0x0002));
+		self::assertSame(0x01020304, $pim->getEntryValue(0x0002));
+
+		// And so does composing: the entry count and tag numbers pack little-endian.
+		$bytes = $pim->toBinary();
+		self::assertSame("\x02\x00", substr($bytes, 13, 2));
+		self::assertSame("\x02\x00", substr($bytes, 21, 2));
+		$reparsed = TPIM::parse($bytes, false);
+		self::assertSame([0x0001, 0x0002], array_column($reparsed->getEntries(), 'tag'));
+		self::assertSame(0x00160016, $reparsed->getEntryValue(0x0001));
+		self::assertSame(0x01020304, $reparsed->getEntryValue(0x0002));
+	}
+
 	public function testPictureInfoVendors()
 	{
 		$olympus = TPictureInfo::parse("OLYMPUS OPTICAL CO.,LTD.\r\n[Camera Info]\r\nType=SX151\r\nSerial=1234\r\n[end]trailing");
