@@ -126,6 +126,10 @@
   because a `--path-coverage` run takes far longer than the suite itself. Branch coverage is
   the stronger measure: it catches a decision that only ever goes one way, which a covered
   line hides. Every one of the 20 remaining untaken branches is unreachable by construction,
+  and the gate's per-file figures are **maximums with a total cap**, not exact counts: the
+  compiler emits these edges, so which site carries one moves between PHP versions — PHP 8.1
+  reports the dead multi-catch rethrow in `TTIFFDocument::scanIfd()` and PHP 8.3 the identical
+  one in `TEXIF::scanStream()`. A file under its maximum is reported, not failed.
   and most are not code anyone wrote — PHP emits an implicit `UnhandledMatchError` edge for a
   `match` behind a range guard, an implicit `return null` after a `while (true)` that only
   exits by return or throw, an implicit `default` for a `switch` over a validated private

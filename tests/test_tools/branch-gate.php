@@ -17,6 +17,12 @@
  * guards made redundant by an identical earlier check, or failures that need resources a
  * unit test cannot afford (a >4 GiB payload, a ~537 M pixel image).  See AGENTS.md.
  *
+ * Because those edges are emitted by the compiler rather than written, *which* site
+ * reports one moves between PHP and Xdebug versions: two identical multi-catches can swap
+ * which of them carries the dead rethrow.  The per-file figures are therefore maximums,
+ * not exact counts, and a total cap keeps that tolerance from hiding real drift.  A file
+ * that comes in under its maximum is reported, not failed.
+ *
  * Usage: php tests/test_tools/branch-gate.php <coverage.php>
  *
  * @author Brad Anderson <belisoful@icloud.com>
@@ -24,17 +30,21 @@
  * @license https://github.com/pradosoft/prado/blob/master/LICENSE
  */
 
-/** The unreachable branch edges, per file. */
+/** The most unreachable branch edges each file may carry. */
 const ALLOWED_UNTAKEN = [
 	'src/IO/Compression/TCCITTFaxCompressor.php' => 7,
 	'src/IO/Image/Meta/JUMBF/TJUMBFBox.php' => 1,
-	'src/IO/Image/TIFF/TTIFFDataType.php' => 2,
+	'src/IO/Image/Meta/TEXIF.php' => 1,
 	'src/IO/Image/TIFF/TTIFFDocument.php' => 1,
+	'src/IO/Image/TIFF/TTIFFDataType.php' => 2,
 	'src/IO/Image/TImageGraphicsGD.php' => 2,
 	'src/IO/Image/TImageGraphicsImagick.php' => 2,
 	'src/IO/Image/TJPEG.php' => 3,
 	'src/IO/Image/TPNG.php' => 2,
 ];
+
+/** The most unreachable branches the library may carry in total, on any PHP version. */
+const MAX_UNTAKEN = 20;
 
 require dirname(__DIR__, 2) . '/vendor/autoload.php';
 
@@ -72,14 +82,18 @@ printf("Branches: %.2f%% taken (%d of %d), %d untaken\n", ($total - $count) / $t
 $failures = [];
 foreach ($untaken as $file => $lines) {
 	$allowed = ALLOWED_UNTAKEN[$file] ?? 0;
-	if (count($lines) !== $allowed) {
+	if (count($lines) > $allowed) {
 		sort($lines);
-		$failures[] = sprintf('  %s has %d untaken branch(es) near line(s) %s, expected %d', $file, count($lines), implode(', ', array_unique($lines)), $allowed);
+		$failures[] = sprintf('  %s has %d untaken branch(es) near line(s) %s, at most %d allowed', $file, count($lines), implode(', ', array_unique($lines)), $allowed);
 	}
 }
+if ($count > MAX_UNTAKEN) {
+	$failures[] = sprintf('  %d untaken branches in total, at most %d allowed', $count, MAX_UNTAKEN);
+}
 foreach (ALLOWED_UNTAKEN as $file => $allowed) {
-	if (!isset($untaken[$file])) {
-		$failures[] = sprintf('  %s now takes every branch; drop its entry from the gate (expected %d untaken)', $file, $allowed);
+	$has = count($untaken[$file] ?? []);
+	if ($has < $allowed) {
+		printf("  note: %s carries %d of its %d allowed unreachable edge(s) on this PHP version\n", $file, $has, $allowed);
 	}
 }
 

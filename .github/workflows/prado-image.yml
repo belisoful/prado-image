@@ -111,7 +111,7 @@ jobs:
       - name: Measure branch coverage
         env:
           XDEBUG_MODE: coverage
-        run: php -d memory_limit=1G vendor/bin/phpunit --testsuite unit --path-coverage --coverage-php build/logs/coverage.php
+        run: php -d memory_limit=2G vendor/bin/phpunit --testsuite unit --path-coverage --coverage-php build/logs/coverage.php
 
       - name: Enforce branch coverage
-        run: php -d memory_limit=512M tests/test_tools/branch-gate.php build/logs/coverage.php
+        run: php -d memory_limit=1G tests/test_tools/branch-gate.php build/logs/coverage.php
