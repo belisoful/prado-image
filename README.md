@@ -1,32 +1,79 @@
 # PRADO Image Extension
 
-Image container readers, metadata editing, and image codecs for the [PRADO PHP Framework](https://github.com/pradosoft/prado) (version 4.4+), implemented as a PRADO 4 extension:
+Read and write the metadata inside image files — EXIF, XMP, IPTC, ICC profiles and the rest —
+from PHP, without re-encoding the picture. An extension for the
+[PRADO PHP Framework](https://github.com/pradosoft/prado) 4.4+.
 
-- **JPEG, read and write** — parsed at the marker-segment level: pixel dimensions from the start-of-frame, APP0 JFIF/JFXX, APP1 EXIF and XMP, APP3 Kodak Meta, APP12 Picture Info, APP13 Photoshop IRB/IPTC, APP2 ICC profile, and the COM comment, with the entropy-coded scan preserved verbatim on a metadata-only edit. `getImage()`/`setImage()`/`fromImage()` also replace the pixels when that is what you want: the frame and scan segments are swapped and every carrier — including the comment and any application segment this class does not model — rides across.
-- **TIFF / EXIF** — a complete TIFF 6.0 IFD engine (both byte orders, all twelve data types including Float and Double) beneath a full EXIF model: IFD0/EXIF/GPS/Interoperability/IFD1, every tag of Exif 3.1 (CIPA DC-008-2026) — 220 known tags: the 212 the specification defines spanning EXIF 2.2 through Exif 3.1, plus the TIFF 6.0 document/host fields and the Windows Explorer XP* fields the privacy scrub reaches (CIPA DC-008-2026: lens/body identity, time-zone offsets, the environmental block, composite-image info, the 3.0 authorship set and UTF-8 field type, and the 3.1 AI-era tags — LearningOptOutIn, development-type and correction disclosure, LED light sources) with human-readable interpretation (enumeration lookups, units, GPS coordinates, special decoders), the IFD1 thumbnail, and read/write EXIF rewriting that **pins the makernote at its original offset** so internal pointers survive — plus the Kodak APP3 `Meta` variant. `clearPrivateData()` scrubs identifying information by `TPrivacyCategory` (location, author, camera identity, serial numbers, timestamps, software, maker note, thumbnail) while keeping the picture-describing fields, for photos leaving a user's control.
-- **Privacy scrub** — `clearPrivateData(TPrivacyCategory ...)` is a first-class operation on every carrier (`TEXIF`, `TXMP`, `TIPTC`, `TPhotoshopIRB`) and every container (`TJPEG`, `TPNG`, `TTIFF`, `TWebP`, `TGIF`), through the one `IPrivacyScrubbable` contract: a container fans the same category flags out to each metadata block it holds plus its format-only fields (JPEG comment and JFIF/JFXX thumbnails, PNG text chunks, GIF comments), so one call redacts where, when, by whom, and with what a photo was taken — everywhere the format can say it — while leaving the picture-describing fields.
-- **TIFF files, read and write** — strip/tile data is captured and relocated with recomputed offsets, so TIFF metadata edits rewrite losslessly; and the raster itself decodes to and encodes from GD/Imagick images: uncompressed, PackBits, LZW, and the CCITT bilevel fax codings (RLE, Group 3 1D/2D, Group 4), with the horizontal predictor, either `FillOrder`, either `PlanarConfiguration`, **strip- or tile-organized** blocks, 1/2/4/8/16-bit samples, and the bilevel, grayscale, palette, RGB, **CMYK (Separated)**, **YCbCr (including subsampling)**, and **CIE/ICC L\*a\*b\*** photometrics (see `agents/working/TIFF6-coverage.md` for the precise TIFF 6.0 section-by-section status).
-- **Private spaces** — the maker notes and private IFDs an EXIF rewrite must not move are exposed as byte ranges (`getReservedSpaces()`) and bridged to the framework's reserved-space stream decorators: `TEXIF`/`TTIFF` hand their composed bytes to a `TReservedSpaceStream` (Clip, Fail, or Skip on write) or a `TFreeSpaceStream`, so a consumer edits the block while the maker notes stay byte-identical — protected exactly as the writer protects them.
-- **CCITT fax codecs** — T.4 Modified Huffman and Group 3 (one- and two-dimensional), and T.6 Group 4 (MMR), as first-class `Prado\IO\Compression` codecs, encode and decode.
-- **Makernotes** — thirteen camera makers decoded (Agfa, Canon, Casio, Epson, Fujifilm, Konica/Minolta, Kyocera/Contax, Nikon, Olympus, Panasonic, Pentax/Asahi, Ricoh, Sony) with their format quirks: forced byte orders, note-relative offsets, missing next-IFD pointers, Nikon Type 3's embedded TIFF, Ricoh's text and nested-IFD forms, Canon/Minolta packed camera-settings decoding, and Casio/Olympus/Minolta embedded thumbnails.
-- **XMP** — a DOM-backed packet model covering the whole ISO 16684-1 value grammar: simple values (element and attribute shorthand), `rdf:Alt`/`Bag`/`Seq` arrays with their form preserved, structures nested to any depth, **arrays of structures** (`xmpMM:History`), qualified values with their qualifiers, and **language alternatives** with spec-correct `x-default`/primary-language fallback. Adds path expressions (`xmpMM:History[1]/stEvt:action`), property enumeration, date and boolean helpers, a registry of ~25 standard schema prefixes plus custom registration, and packet options (padding, read-only `end="r"`). A **schema registry** (`TXMPSchemas`) knows each standard property's declared form, so `setProperty()` writes `dc:title` as a language alternative and `dc:subject` as a `Bag` without being told, and `validate()` reports properties whose stored form contradicts their schema. Carried in **JPEG (with extended XMP: packets past 64 KB split across APP1 segments with the `HasExtendedXMP` digest and rejoin transparently), PNG `iTXt`, WebP `XMP ` (synthesizing the `VP8X` header the format requires), and TIFF/EXIF tag 700**.
-- **Photoshop IRB** — every 8BIM resource with the full id vocabulary and typed decoders (resolution info, JPEG quality, grid/guides, thumbnails, halftones, transfer functions, version info), 32000-byte APP13 chunking, and the embedded IPTC bridge.
-- **PNG, read and write** — parsed at the chunk level with dimensions from `IHDR` and every chunk exposed; `setChunk()`/`addChunk()`/`removeChunk()` maintain the specification's normative chunk order and each CRC is recomputed on compose. Every carrier PNG defines is read **and** written: the deflated `iCCP` ICC profile, the `eXIf` EXIF block, the `iTXt` XMP packet, and — since PNG defines no IPTC chunk — the Photoshop image-resource block in the hex-encoded `Raw profile type 8bim` text chunk that ImageMagick, Photoshop, and ExifTool exchange, which carries IPTC with it. `getImage()`/`setImage()` round-trip the raster, carrying the metadata chunks onto re-encoded pixels. **Animated PNG (APNG)** is first class — the `acTL`/`fcTL`/`fdAT` chunks parse into authored frames (geometry, delay, disposal and blend operations) that round-trip byte-faithfully, decode per frame, and can be built from images, with the single ascending sequence number the format requires managed on write.
-- **WebP / RIFF, read and write** — a generic RIFF container walker with WebP dimensions from the `VP8` (lossy), `VP8L` (lossless), or `VP8X` (extended) bitstream chunk. The `ICCP`, `EXIF`, and `XMP ` chunks are read and written, each placed in the specification's chunk order with its `VP8X` feature flag kept in step — a simple file gains the `VP8X` header that metadata requires. `getImage()`/`setImage()` round-trip the bitstream. WebP defines no IPTC carrier, so `setIPTC()` throws rather than accepting records it would drop.
-- **GIF (87a and 89a), read and write** — the whole standard at the block level: the logical screen descriptor, global and per-frame local color tables, and the ordered stream of frames and extensions. Animation is first class — every frame keeps the sub-rectangle, interlace flag, delay, disposal method, and transparent index the file stores, with the `NETSCAPE2.0` loop count, comment, plain-text, and application extensions read and written. Frames are *authored*, never coalesced, so a parse/compose cycle is byte-for-byte identical — including sub-block framing and the exact case of the `XMP DataXMP` and `ICCRGBG1012` identities that other GIF writers lowercase. Both of those carriers are read **and** written: the XMP packet goes in verbatim behind the 258-byte magic trailer the XMP specification defines for GIF (so a reader that knows nothing of XMP walks straight past it, and no byte of the packet is mistaken for a sub-block length), and the ICC profile rides `ICCRGBG1012`. `getImage()`/`setImage()`/`fromImage()` handle the raster, keeping every extension. GIF defines no IPTC carrier, so `setIPTC()` throws rather than accepting records it would drop.
-- **IPTC (IIM 4.1)** — the full record/dataset model as a `TMap`: read, edit, and re-encode the IPTC block, by tag name or `record#dataset` id.
-- **JFIF / JFXX thumbnails** — parse and write APP0 thumbnails, converting to and from GD or ImageMagick images.
-- **File Info** — the Photoshop File Info emulation: twenty-two document fields read merged from and written synchronized to EXIF + XMP + IRB/IPTC.
-- **JUMBF (APP11)** — the box-structured metadata of ISO/IEC 19566-5 that Exif 3.0 adopted for annotation data: superboxes with their description boxes (type UUID, label, id, signature) and XML/JSON/CBOR content, reassembled across APP11 segment fragments on read and re-split on write.
-- **Exif audio** — the WAVE-form audio files cameras record beside photographs: the `exif` LIST chunk's seven attribute chunks (version, related image, recording time, manufacturer, model, maker note, and the character-coded user comment), edited without touching the `fmt `/`data` audio.
-- **PrintIM and Picture Info** — the PIM block codec and the legacy APP12 text metadata of early cameras.
-- **GD and ImageMagick** — every raster conversion (thumbnails, the IPTC rasterized caption) runs through `TImageGraphics`, a routing facade over one `IImageGraphicsLibrary` implementation per backend (`TImageGraphicsGD`, `TImageGraphicsImagick`): it accepts `\GdImage` or `\Imagick` objects and produces either on request; GD is preferred, Imagick is the fallback, and one of the two suffices. `supports()` reports what each backend can actually do on the installation, and `getCapableLibrary()` hands back the one that can do a given job. `encode()` writes JPEG, PNG, or WebP; `getICCProfile()`/`setICCProfile()` read and attach an embedded profile; `cmykPixels()`/`fromCmykPixels()` separate and recombine CMYK; and `transformICCProfile()` converts pixels between two color spaces in **either** backend — ImageMagick through its color-management library, GD through the software matrix/TRC engine below. What stays ImageMagick-only is carrying an embedded profile on the image object and holding more than eight bits per sample, both of which are facts about GD's image model rather than gaps that software can fill.
-- **ICC profiles, read and write** (`Prado\IO\Image\ICC\`) — `TICCProfile` decodes the ICC.1 header and tag table, so a profile is **authored and edited** rather than only swapped whole: every header field has a setter (device class, colour spaces, version, creation date, platform, manufacturer, model, flags, attributes, rendering intent, illuminant, creator), `computeProfileId()` writes the specification's MD5, and the tag table supports typed reads *and* writes — text in all three encodings (`text`, v2 `desc`, v4 `mluc` with per-locale records), `XYZ ` numbers, `curv` and `para` curves, `sf32` arrays, plus `setMatrix()`/`setToneCurves()` — with `removeTag()`, `aliasTag()`, and shared data elements written once. Composition recomputes the offsets and leaves reserved header bytes untouched. `TICCTransform` then converts pixels between two matrix/TRC color spaces — the sRGB, Adobe RGB, and Display P3 form — in pure PHP: the source's tone curves linearize, its colorant matrix reaches the D50 connection space, and the destination's inverse brings it back. Lookup-table profiles (CMYK and printer profiles) are read and rewritten faithfully but not evaluated; those conversions need ImageMagick, and both `TICCTransform::supports()` and the graphics facade say so instead of approximating.
-- **Image codecs** — the `Prado\IO\Compression` whole-string codecs and streaming filters for the classic image compressions: LZW and GIF-flavor LZW, PackBits, and the TIFF horizontal predictor.
+If you have ever needed to strip the GPS coordinates out of a photo before publishing it, add
+a caption to a JPEG without putting it through another lossy generation, or find out which
+lens took a shot, that is what this is for.
 
-The readers parse and rewrite the image **container**, never the pixels: an edit-and-save round trip re-encodes only the metadata segments, leaving the image data byte-identical.
+The central promise is that editing metadata leaves your pixels alone. These readers parse the
+image **container** and rewrite only the parts you changed; the compressed image data comes
+through byte-identical. When you *do* want to change the pixels, `getImage()` / `setImage()` /
+`fromImage()` are there, and they carry the metadata across for you.
 
-Everything reads from and writes to **PSR-7 streams and PHP stream resources** alongside strings and files: every container and metadata class offers `fromStream()` (accepting a `StreamInterface` — including the framework's `TStream`, a windowed `TLimitStream`, or a typed `TBinaryStream` decorator — or a raw stream resource) and `writeTo()` for the same targets, honoring partial writes.
+## Formats
+
+Every format here is supported in both directions — reading and writing.
+
+- **JPEG** — parsed segment by segment: JFIF/JFXX, EXIF, XMP, Kodak Meta, Picture Info,
+  Photoshop IRB/IPTC, ICC, and the comment. Edit any of them and the entropy-coded scan is
+  copied through untouched.
+- **TIFF** — a complete TIFF 6.0 engine, both byte orders and all twelve data types. Strip and
+  tile data is relocated with recomputed offsets, so metadata edits are lossless. The raster
+  decodes too: uncompressed, PackBits, LZW and the CCITT fax codings, at 1–16 bits, striped or
+  tiled, across bilevel, grayscale, palette, RGB, CMYK, YCbCr and L\*a\*b\*.
+- **PNG** — chunk-level, with the normative chunk order maintained and CRCs recomputed. Reads
+  and writes every carrier PNG defines, plus the `Raw profile type 8bim` text chunk that
+  Photoshop, ImageMagick and ExifTool use to exchange IPTC (PNG has no IPTC chunk of its own).
+  **APNG animation is first class** — frames round-trip byte-faithfully.
+- **WebP / RIFF** — dimensions from `VP8`, `VP8L` or `VP8X`; ICC, EXIF and XMP read and
+  written, with the `VP8X` header and its feature flags kept in step automatically.
+- **GIF 87a and 89a** — the whole standard at block level, animation included. Frames are kept
+  exactly as authored rather than coalesced, so sub-rectangles, disposal, interlacing and local
+  palettes survive a round trip unchanged.
+
+Two of those formats simply have nowhere to put IPTC — WebP and GIF — so `setIPTC()` throws
+rather than accepting records it would quietly lose.
+
+## Metadata
+
+- **EXIF** — the full model over IFD0/EXIF/GPS/Interoperability/IFD1, with all 220 known tags
+  of Exif 3.1 (CIPA DC-008-2026) and human-readable interpretation of their values. Rewriting
+  **pins the maker note at its original byte offset**, because maker notes are full of pointers
+  into themselves and moving one corrupts it.
+- **Maker notes** — thirteen manufacturers decoded (Agfa, Canon, Casio, Epson, Fujifilm,
+  Konica/Minolta, Kyocera/Contax, Nikon, Olympus, Panasonic, Pentax, Ricoh, Sony), quirks and
+  all: forced byte orders, note-relative offsets, embedded TIFFs, packed camera settings.
+- **XMP** — a DOM-backed model of the entire ISO 16684-1 grammar: arrays, nested structures,
+  qualifiers and language alternatives. It knows the standard schemas, so writing `dc:title`
+  gives you a language alternative and `dc:subject` a `Bag` without your having to say so.
+  Extended XMP in JPEG is split and rejoined transparently.
+- **IPTC (IIM 4.1)** — the full record set as a map, addressable by tag name or `record#dataset`.
+- **Photoshop IRB** — every 8BIM resource, with typed decoders and the embedded IPTC bridge.
+- **ICC profiles** — not just swapped whole but genuinely edited: every header field, typed tag
+  reads and writes, and the profile-id digest. `TICCTransform` converts pixels between
+  matrix/TRC spaces in pure PHP, which gives GD colour management it has no API for.
+- And the smaller ones: **JFIF/JFXX** thumbnails, **JUMBF** boxes, **PrintIM**, **APP12 Picture
+  Info**, the Photoshop **File Info** 22-field sync layer, and the **WAVE audio** files cameras
+  record beside photographs.
+
+## Two things worth knowing about
+
+**Privacy scrubbing.** `clearPrivateData()` removes identifying information — location,
+authorship, camera identity, serial numbers, timestamps, software, maker notes, thumbnails —
+from every carrier a file holds, in a single call, by category. It leaves everything that
+describes the picture itself, so what you get back is still a useful photo.
+
+**Private spaces.** The maker notes an EXIF rewrite must not disturb are exposed as byte
+ranges and bridged to the framework's reserved-space streams, so a consumer can edit around
+them with the same protection the writer itself applies.
+
+## Streams
+
+Everything works with PSR-7 streams and PHP stream resources as well as strings and files —
+`fromStream()` and `writeTo()` throughout, partial writes honoured.
 
 ```php
 $jpeg = TJPEG::fromStream(new TBinaryStream(TStream::fromFile('in.jpg')));
@@ -35,7 +82,9 @@ $jpeg->writeTo(fopen('out.jpg', 'wb'));                 // resource out
 $exif = TEXIF::fromStream(new TLimitStream($file, $len, $off));   // windowed parse
 ```
 
-For huge TIFF files there is also a **lazy metadata scan** built on `TBinaryStream`: `TEXIF::scanFile()`/`scanStream()` (and `TTIFFDocument::scanStream()`) walk the header, IFD chains, sub-IFDs, and the IFD1 thumbnail by seeking — the strip/tile pixel data is never read, so the metadata of a multi-gigabyte scan loads in kilobytes. A per-tag size cap guards against hostile declarations, and `getIsScanned()` marks the metadata-only form.
+Very large TIFFs get a lazy scan: `TEXIF::scanFile()` seeks through the header, IFD chains and
+thumbnail without ever reading the pixel data, so the metadata of a multi-gigabyte scan loads
+in kilobytes.
 
 ```php
 $exif = TEXIF::scanFile('500MB-scan.tif');   // seeks; never loads the pixels
