@@ -6,6 +6,7 @@ use Prado\IO\Image\TIFF\TTIFFDataType;
 use Prado\IO\Image\TIFF\TTIFFDocument;
 use Prado\IO\Image\TIFF\TTIFFIfd;
 use Prado\IO\Image\TIFF\TTIFFTag;
+use Prado\IO\TStream;
 
 class TTIFFDocumentTest extends PHPUnit\Framework\TestCase
 {
@@ -305,6 +306,20 @@ class TTIFFDocumentTest extends PHPUnit\Framework\TestCase
 		$reparsed = TTIFFDocument::fromString($tiff->toBinary());
 		self::assertNull($reparsed->getIfd(0)->getTag(273)->getExternalData());
 		self::assertSame(['tag 273 has 2 offsets but 1 byte counts'], $reparsed->getWarnings());
+	}
+
+	public function testScannedMismatchedOffsetAndCountTagsAreNotDeferred()
+	{
+		$tiff = new TTIFFDocument();
+		$ifd = new TTIFFIfd();
+		$ifd->setTagValues(256, TTIFFDataType::ULong, [4]);
+		$ifd->setTagValues(273, TTIFFDataType::ULong, [8, 8]);   // two strip offsets
+		$ifd->setTagValues(279, TTIFFDataType::ULong, [4]);      // but one byte count
+		$tiff->addIfd($ifd);
+
+		$scanned = TTIFFDocument::scanStream(TStream::fromString($tiff->toBinary()), null, 16777216, true);
+		self::assertNull($scanned->getIfd(0)->getTag(273)->getExternalData());
+		self::assertSame(['tag 273 has 2 offsets but 1 byte counts'], $scanned->getWarnings());
 	}
 
 	public function testByteCountsTagIsRetypedForExternalData()

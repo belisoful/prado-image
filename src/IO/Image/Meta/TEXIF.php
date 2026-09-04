@@ -201,17 +201,21 @@ class TEXIF extends TComponent implements IPrivacyScrubbable
 	 * A scanned EXIF has no raw TIFF bytes, so a makernote whose format addresses the
 	 * surrounding file absolutely (e.g. Canon) decodes only its inline values; the
 	 * self-contained makernote forms decode fully.
+	 *
+	 * Pass {@see $deferStrips} true to capture the strip/tile data as deferred ranges into the
+	 * still-open source, for {@see streamTo()} to copy straight through.
 	 * @param mixed $stream The seekable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @param bool $deferStrips Whether to capture strip/tile data as deferred ranges (for streaming). Default false.
 	 * @throws TIOException When the stream is not seekable or not a TIFF.
 	 * @return static The scanned EXIF.
 	 */
-	public static function scanStream(mixed $stream): static
+	public static function scanStream(mixed $stream, bool $deferStrips = false): static
 	{
 		if (is_resource($stream)) {
 			$stream = \Prado\IO\TStream::fromResource($stream, false);
 		}
 		$base = $stream instanceof \Psr\Http\Message\StreamInterface ? $stream->tell() : 0;
-		$exif = new static(TTIFFDocument::scanStream($stream, static::subIfdTags()));
+		$exif = new static(TTIFFDocument::scanStream($stream, static::subIfdTags(), 16777216, $deferStrips));
 		$exif->_signature = '';
 		$exif->pinMakernote();
 
@@ -1130,6 +1134,24 @@ class TEXIF extends TComponent implements IPrivacyScrubbable
 		}
 
 		return $removed;
+	}
+
+	/**
+	 * Writes the EXIF to a target.  A bare TIFF document (no APP1 signature and no re-linked
+	 * thumbnail) streams through the TIFF document's own {@see TTIFFDocument::streamTo()}, so
+	 * a scanned TIFF's deferred strips are copied straight through; a segment form (which must
+	 * lead with its signature) composes in full first.
+	 * @param mixed $target A writable {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
+	 * @throws \Prado\Exceptions\TInvalidDataTypeException When the target is neither.
+	 * @throws TIOException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		if ($this->_signature !== '' || $this->_thumbnail !== null) {
+			return $this->writeTo($target);
+		}
+		return $this->_tiff->streamTo($target);
 	}
 
 	/**

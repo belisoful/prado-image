@@ -10,8 +10,13 @@
 
 namespace Prado\IO\Image;
 
+use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\Exceptions\TIOException;
 use Prado\IO\Image\Meta\TIPTC;
+use Prado\IO\Stream\TLimitStream;
+use Prado\IO\TStream;
+use Prado\Prado;
+use Psr\Http\Message\StreamInterface;
 
 /**
  * TWebP class.
@@ -70,6 +75,16 @@ class TWebP extends TImageFile
 	public function getFormat(): string
 	{
 		return 'WebP';
+	}
+
+	/**
+	 * Indicates whether the bytes are a RIFF container of the `WEBP` form type.
+	 * @param string $data The candidate image bytes.
+	 * @return bool Whether the data is a WebP.
+	 */
+	public static function isWebP(string $data): bool
+	{
+		return strlen($data) >= 12 && strncmp($data, 'RIFF', 4) === 0 && strncmp(substr($data, 8, 4), 'WEBP', 4) === 0;
 	}
 
 	/**
@@ -319,6 +334,69 @@ class TWebP extends TImageFile
 	protected function compose(): string
 	{
 		return $this->_riff === null ? $this->getBytesDirect() : $this->_riff->toBinary();
+	}
+
+	/**
+	 * Lazily reads a WebP from a seekable stream: the small metadata chunks are read, but
+	 * each large pixel chunk (`VP8 `, `VP8L`, `ANMF`, `ALPH`) is kept as a deferred range
+	 * into the still-open source, so a WebP far larger than memory opens for a metadata
+	 * edit.  Pair it with {@see streamTo()}; the source must stay open and seekable until
+	 * then.  The canvas size is read from the small header of the pixel chunk without
+	 * loading it.
+	 * @param mixed $stream The seekable {@see StreamInterface} or PHP stream resource.
+	 * @throws TInvalidDataTypeException When the source is not a stream.
+	 * @throws TIOException When the stream is not seekable or the RIFF form type is not WEBP.
+	 * @return static The lazily parsed WebP.
+	 */
+	public static function fromStreamLazy(mixed $stream): static
+	{
+		if (is_resource($stream)) {
+			$stream = TStream::fromResource($stream, false);
+		}
+		if (!$stream instanceof StreamInterface) {
+			throw new TInvalidDataTypeException('streamio_source_invalid', get_debug_type($stream));
+		}
+		$riff = TRIFF::fromStreamLazy($stream, [TRIFFChunkType::Vp8, TRIFFChunkType::Vp8Lossless, TRIFFChunkType::AnimationFrame, TRIFFChunkType::Alpha]);
+		if ($riff->getFormType() !== 'WEBP') {
+			throw new TIOException('webp_invalid', 'RIFF form type is not WEBP');
+		}
+		$image = Prado::createComponent(static::class);
+		$image->_riff = $riff;
+		if (($vp8x = $riff->getChunk(TRIFFChunkType::Vp8Extended)) !== null) {
+			$image->readVp8x($vp8x->getData());   // VP8X is small and loaded
+		} elseif (($vp8l = $riff->getChunk(TRIFFChunkType::Vp8Lossless)) !== null) {
+			$image->readVp8l($image->peekDeferred($vp8l, $stream));
+		} elseif (($vp8 = $riff->getChunk(TRIFFChunkType::Vp8)) !== null) {
+			$image->readVp8($image->peekDeferred($vp8, $stream));
+		}
+		return $image;
+	}
+
+	/**
+	 * Reads the leading dimension-header bytes of a deferred pixel chunk from its source
+	 * through a {@see TLimitStream} window, without materializing the payload.
+	 * @param TImageChunk $chunk The deferred dimension-bearing chunk.
+	 * @param StreamInterface $stream The still-open source.
+	 * @return string The first bytes of the payload (up to 10).
+	 */
+	private function peekDeferred(TImageChunk $chunk, StreamInterface $stream): string
+	{
+		return (new TLimitStream($stream, min(10, $chunk->getSize()), $chunk->getOffset()))->getContents();
+	}
+
+	/**
+	 * Writes the WebP to a target, copying each deferred pixel chunk straight from the
+	 * source in bounded memory and rebuilding the metadata chunks (with their `VP8X`
+	 * feature flags already in step from the setters), so a WebP opened with
+	 * {@see fromStreamLazy()} is rewritten around a metadata edit without holding its pixels.
+	 * @param mixed $target A writable {@see StreamInterface} or PHP stream resource.
+	 * @throws TInvalidDataTypeException When the target is neither.
+	 * @throws TIOException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		return $this->_riff === null ? $this->writeTo($target) : $this->_riff->streamTo($target);
 	}
 
 	/**

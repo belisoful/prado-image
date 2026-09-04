@@ -60,7 +60,7 @@
 		"ext-iconv": "Charset conversion of IPTC text, EXIF UserComment, and Photoshop unicode strings."
 	},
 	"require-dev": {
-		"pradosoft/prado": "^4.4 || dev-master",
+		"pradosoft/prado": "^4.4@dev",
 		"phpunit/phpunit": "^10",
 		"phpdocumentor/shim": "^3",
 		"friendsofphp/php-cs-fixer": "^3.94",

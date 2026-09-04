@@ -8,6 +8,7 @@
 	"TPackBitsCompressor": "Prado\\IO\\Compression\\TPackBitsCompressor",
 	"TPackBitsFilter": "Prado\\IO\\Compression\\TPackBitsFilter",
 	"TStreamIOTrait": "Prado\\IO\\Image\\TStreamIOTrait",
+	"TSourceRange": "Prado\\IO\\Image\\TSourceRange",
 	"IImageGraphicsLibrary": "Prado\\IO\\Image\\IImageGraphicsLibrary",
 	"TImageGraphics": "Prado\\IO\\Image\\TImageGraphics",
 	"TImageGraphicsGD": "Prado\\IO\\Image\\TImageGraphicsGD",

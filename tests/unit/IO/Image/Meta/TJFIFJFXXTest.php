@@ -1,5 +1,6 @@
 <?php
 
+use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\IO\Image\Meta\TJFIF;
 use Prado\IO\Image\Meta\TJFXX;
@@ -127,6 +128,20 @@ class TJFIFJFXXTest extends PHPUnit\Framework\TestCase
 
 		// A stream that is not JFIF is refused the same way a string is.
 		self::assertFalse(TJFIF::parse(TStream::fromString("JFIF\x00\x01")));
+
+		// A raw PHP stream resource is accepted too, without taking ownership of it.
+		$resource = fopen('php://temp', 'r+b');
+		fwrite($resource, $binary);
+		rewind($resource);
+		$fromResource = TJFIF::parse($resource);
+		self::assertInstanceOf(TJFIF::class, $fromResource);
+		self::assertSame(bin2hex($binary), bin2hex($fromResource->toBinary()));
+		self::assertTrue(is_resource($resource), 'the caller keeps its handle');
+		fclose($resource);
+
+		// Anything else is refused by type.
+		self::expectException(TInvalidDataTypeException::class);
+		TJFIF::parse([1, 2, 3]);
 	}
 
 	//
@@ -252,6 +267,20 @@ class TJFIFJFXXTest extends PHPUnit\Framework\TestCase
 
 		// A stream too short to be JFXX is refused the same way a string is.
 		self::assertFalse(TJFXX::parse(TStream::fromString('JFXX')));
+
+		// A raw PHP stream resource is accepted too, without taking ownership of it.
+		$resource = fopen('php://temp', 'r+b');
+		fwrite($resource, $binary);
+		rewind($resource);
+		$fromResource = TJFXX::parse($resource);
+		self::assertInstanceOf(TJFXX::class, $fromResource);
+		self::assertSame(bin2hex($binary), bin2hex((string) $fromResource->toBinary()));
+		self::assertTrue(is_resource($resource), 'the caller keeps its handle');
+		fclose($resource);
+
+		// Anything else is refused by type.
+		self::expectException(TInvalidDataTypeException::class);
+		TJFXX::parse([1, 2, 3]);
 	}
 
 	public function testJfxxEfficiencyPicksThePaletteWhenItIsTheSmallestOfTheThree()

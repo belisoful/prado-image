@@ -10,8 +10,11 @@
 
 namespace Prado\IO\Image;
 
+use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\Exceptions\TIOException;
+use Prado\IO\Image\Meta\TEXIF;
 use Prado\IO\Image\Meta\TIPTC;
+use Prado\IO\Image\Meta\TXMP;
 use Prado\IO\TStream;
 use Prado\Prado;
 use Prado\TComponent;
@@ -26,9 +29,22 @@ use Psr\Http\Message\StreamInterface;
  * and any embedded metadata.
  *
  * The readers report the canvas {@see getWidth() width} and {@see getHeight() height},
- * the {@see getFormat() format} name, and where present the {@see getIPTC() IPTC}
- * record set and {@see getICCProfile() ICC profile}.  They read the image without
- * re-encoding it.
+ * the {@see getFormat() format} name, and where present the {@see getEXIF() EXIF},
+ * {@see getXMP() XMP}, {@see getIPTC() IPTC} record set and {@see getICCProfile() ICC
+ * profile} — the metadata common across formats, reached the same way whatever the
+ * container.  They read the image without re-encoding it.
+ *
+ * Calling a factory on the base class itself detects the format from the bytes and opens
+ * the matching container, so a caller that does not know the format up front can still
+ * read one polymorphically:
+ *
+ * ```php
+ * $image = TImageFile::fromFile('photo.unknown');   // sniffs JPEG/PNG/GIF/WebP/TIFF
+ * [$image->getFormat(), $image->getWidth(), $image->hasEXIF(), $image->getXMP()];
+ * ```
+ *
+ * A factory called on a concrete container ({@see TJPEG::fromFile()}) stays bound to that
+ * format and rejects bytes of any other.
  *
  * @author Brad Anderson <belisoful@icloud.com>
  */
@@ -58,9 +74,34 @@ abstract class TImageFile extends TComponent implements IPrivacyScrubbable
 	 */
 	public static function fromString(string $bytes): static
 	{
+		if (static::class === self::class) {
+			// Called on the abstract base: detect the container from the bytes and open it.
+			$container = self::detect($bytes);
+			/** @var static $image (a detected container is-a TImageFile, which static is here) */
+			$image = $container::fromString($bytes);
+			return $image;
+		}
 		$image = Prado::createComponent(static::class);
 		$image->load($bytes);
 		return $image;
+	}
+
+	/**
+	 * Resolves the container class for an image from its leading bytes.
+	 * @param string $bytes The image bytes.
+	 * @throws TIOException When the bytes are not a recognized format.
+	 * @return class-string<TImageFile> The matching container class.
+	 */
+	protected static function detect(string $bytes): string
+	{
+		return match (true) {
+			TJPEG::isJPEG($bytes) => TJPEG::class,
+			TPNG::isPNG($bytes) => TPNG::class,
+			TGIF::isGIF($bytes) => TGIF::class,
+			TWebP::isWebP($bytes) => TWebP::class,
+			TTIFF::isTIFF($bytes) => TTIFF::class,
+			default => throw new TIOException('imagefile_format_unrecognized'),
+		};
 	}
 
 	/**
@@ -214,6 +255,18 @@ abstract class TImageFile extends TComponent implements IPrivacyScrubbable
 	}
 
 	/**
+	 * Writes the rebuilt image to a target, streaming any large payload in bounded memory
+	 * where the container parsed lazily (its payloads kept as deferred ranges, via
+	 * `fromStreamLazy()`), so a file too large to hold can still be rewritten around a
+	 * metadata edit; a fully loaded container writes the same bytes {@see toBinary()} would.
+	 * @param mixed $target A writable {@see StreamInterface} or PHP stream resource.
+	 * @throws TInvalidDataTypeException When the target is neither.
+	 * @throws TIOException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	abstract public function streamTo(mixed $target): int;
+
+	/**
 	 * Writes the rebuilt image to a file.
 	 * @param string $path The destination file path.
 	 * @throws TIOException When the file cannot be written.
@@ -245,6 +298,60 @@ abstract class TImageFile extends TComponent implements IPrivacyScrubbable
 	{
 		return $this->getHeightDirect();
 	}
+
+	/**
+	 * Indicates whether the image carries EXIF metadata.
+	 * @return bool Whether EXIF is present.
+	 */
+	public function hasEXIF(): bool
+	{
+		return $this->getEXIF() !== null;   // via the accessor, which a container overrides
+	}
+
+	/**
+	 * Returns the parsed EXIF metadata.  A format with no EXIF carrier (GIF) has none, so
+	 * the base returns null; a container that carries EXIF overrides this.
+	 * @return ?TEXIF The EXIF metadata, or null when absent.
+	 */
+	public function getEXIF(): ?TEXIF
+	{
+		return null;
+	}
+
+	/**
+	 * Sets (or clears, when null) the EXIF metadata.  A container that carries EXIF
+	 * overrides this; on a format with no writable EXIF carrier, setting a non-null value
+	 * throws rather than silently dropping it (clearing null is a no-op).
+	 * @param ?TEXIF $exif The EXIF metadata, or null to drop it.
+	 * @throws TIOException When the format has no writable EXIF carrier.
+	 */
+	public function setEXIF(?TEXIF $exif): void
+	{
+		if ($exif !== null) {
+			throw new TIOException('imagefile_no_exif_carrier', $this->getFormat());
+		}
+	}
+
+	/**
+	 * Indicates whether the image carries XMP metadata.
+	 * @return bool Whether an XMP packet is present.
+	 */
+	public function hasXMP(): bool
+	{
+		return $this->getXMP() !== null;   // via the accessor every container implements
+	}
+
+	/**
+	 * Returns the parsed XMP packet.
+	 * @return ?TXMP The XMP packet, or null when absent.
+	 */
+	abstract public function getXMP(): ?TXMP;
+
+	/**
+	 * Sets (or clears, when null) the XMP packet written back on compose.
+	 * @param ?TXMP $xmp The XMP packet, or null to drop it.
+	 */
+	abstract public function setXMP(?TXMP $xmp): void;
 
 	/**
 	 * Indicates whether the image carries IPTC metadata.
@@ -351,7 +458,12 @@ abstract class TImageFile extends TComponent implements IPrivacyScrubbable
 			if ($value instanceof IPrivacyScrubbable) {
 				$count = $value->clearPrivateData($types);
 				if ($count > 0) {
-					call_user_func([$this, $setter], $value);
+					try {
+						call_user_func([$this, $setter], $value);
+					} catch (TIOException $e) {
+						// A read-only carrier (TIFF's EXIF is its live IFD, already scrubbed in
+						// place above) refuses the write-back; the scrub still took effect.
+					}
 					$removed += $count;
 				}
 			}

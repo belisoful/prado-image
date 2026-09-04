@@ -181,11 +181,14 @@ class TCompressionFilterTest extends PHPUnit\Framework\TestCase
 
 	public function testPackBitsTruncatedStreamsDecodeTolerantly()
 	{
-		// A literal header wanting 6 bytes with only 2 present decodes to the bytes it has.
+		// A literal header wanting 6 bytes with only 2 present is an incomplete packet: the two
+		// bytes are unambiguously literal, so the whole-string codec recovers them exactly as
+		// the streaming filter does, because both now drive the one engine.
 		self::assertSame('AB', TPackBitsCompressor::decompress(chr(5) . 'AB'));
-		// A repeat header with no run byte decodes to nothing.
+		// A repeat header with no run byte has nothing to expand, so it decodes to nothing.
 		self::assertSame('', TPackBitsCompressor::decompress(chr(254)));
-		// The filter discards a partial packet held at close, matching the codec.
+		// The filter recovers the complete literal and drops the trailing truncated repeat,
+		// matching the codec.
 		self::assertSame('AB', $this->runFilter(TPackBitsFilter::DecodeName, chr(1) . 'AB' . chr(254), 64));
 	}
 
@@ -212,11 +215,12 @@ class TCompressionFilterTest extends PHPUnit\Framework\TestCase
 		self::assertSame('ABC', $this->runFilter(TPackBitsFilter::DecodeName, chr(128) . chr(2) . 'ABC' . chr(128), 64));
 	}
 
-	public function testPackBitsDecodeFilterDropsATruncatedLiteral()
+	public function testPackBitsDecodeFilterRecoversATruncatedLiteral()
 	{
-		// A literal header wanting six bytes with only two present is an incomplete packet: it
-		// is carried, never completed, and discarded at close, while the packet before it decodes.
-		self::assertSame('XYZ', $this->runFilter(TPackBitsFilter::DecodeName, chr(2) . 'XYZ' . chr(5) . 'AB', 64));
+		// A literal header wanting six bytes with only two present is an incomplete packet: the
+		// two bytes are unambiguously literal, so the filter recovers them at close after the
+		// packet before it decodes — matching the whole-string codec byte for byte.
+		self::assertSame('XYZAB', $this->runFilter(TPackBitsFilter::DecodeName, chr(2) . 'XYZ' . chr(5) . 'AB', 64));
 	}
 
 	public function testLZWDecodeFilterIgnoresBytesAfterEndOfInformation()

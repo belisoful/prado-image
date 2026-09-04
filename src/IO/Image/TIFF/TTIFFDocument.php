@@ -12,6 +12,7 @@ namespace Prado\IO\Image\TIFF;
 
 use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\Exceptions\TIOException;
+use Prado\IO\Image\TSourceRange;
 use Prado\IO\Stream\TBinaryStream;
 use Prado\IO\TByteOrder;
 use Prado\IO\TStream;
@@ -86,6 +87,9 @@ class TTIFFDocument extends TComponent
 	/** @var bool Whether the document came from a metadata-only {@see scanStream()}. */
 	private bool $_scanned = false;
 
+	/** @var int The stream position of the TIFF start, for deferred strip ranges. */
+	private int $_scanBase = 0;
+
 	/**
 	 * Constructs an empty big-endian document.
 	 */
@@ -133,18 +137,22 @@ class TTIFFDocument extends TComponent
 	 * arbitrarily large TIFF file loads without materializing the file.  The TIFF is
 	 * taken to start at the stream's current position.
 	 *
-	 * A scanned document is for metadata reading: the strip/tile offset tags keep
-	 * their values but carry no captured data ({@see getIsScanned()}), so composing
-	 * one produces a metadata-only TIFF.
+	 * A scanned document is for metadata reading: by default the strip/tile offset tags keep
+	 * their values but carry no captured data ({@see getIsScanned()}), so composing one
+	 * produces a metadata-only TIFF.  Pass {@see $deferStrips} true to capture the strip/tile
+	 * data as deferred {@see TSourceRange} windows into the still-open source instead — for
+	 * {@see streamTo()}, which copies them straight through — in which case the source must
+	 * stay open and seekable until compose.
 	 * @param mixed $stream The seekable {@see StreamInterface} or PHP stream resource.
 	 * @param ?int[] $subIfdTags The tag ids to parse as sub-IFD pointers; null for the defaults.
 	 * @param int $maxTagBytes The per-tag value-size cap; a larger value area is
 	 *   skipped with a warning. Default 16 MiB.
+	 * @param bool $deferStrips Whether to capture strip/tile data as deferred ranges (for streaming). Default false.
 	 * @throws TInvalidDataTypeException When the source is not a stream.
 	 * @throws TIOException When the stream is not seekable or not a TIFF structure.
 	 * @return static The scanned document.
 	 */
-	public static function scanStream(mixed $stream, ?array $subIfdTags = null, int $maxTagBytes = 16777216): static
+	public static function scanStream(mixed $stream, ?array $subIfdTags = null, int $maxTagBytes = 16777216, bool $deferStrips = false): static
 	{
 		if (is_resource($stream)) {
 			$stream = TStream::fromResource($stream, false);
@@ -160,8 +168,42 @@ class TTIFFDocument extends TComponent
 			$tiff->_subIfdTags = $subIfdTags;
 		}
 		$tiff->_scanned = true;
+		$tiff->_scanBase = $stream->tell();
 		$tiff->scan($stream, $maxTagBytes);
+		if ($deferStrips) {
+			$tiff->captureDeferredExternalData($stream);
+		}
 		return $tiff;
+	}
+
+	/**
+	 * Captures a scanned document's strip/tile data as deferred {@see TSourceRange} windows
+	 * into the still-open source rather than loading it, so composing streams the pixels
+	 * through instead of materializing them.  The source must stay open until compose.
+	 * @param StreamInterface $stream The still-open, seekable source.
+	 */
+	protected function captureDeferredExternalData(StreamInterface $stream): void
+	{
+		foreach ($this->_ifds as $ifd) {
+			foreach (self::OffsetPairs as $offsetsId => $countsId) {
+				$offsetsTag = $ifd->getTag($offsetsId);
+				$countsTag = $ifd->getTag($countsId);
+				if ($offsetsTag === null || $countsTag === null) {
+					continue;
+				}
+				$offsets = (array) $offsetsTag->getValues();
+				$counts = (array) $countsTag->getValues();
+				if (count($offsets) !== count($counts)) {
+					$this->addWarning("tag $offsetsId has " . count($offsets) . ' offsets but ' . count($counts) . ' byte counts');
+					continue;
+				}
+				$blocks = [];
+				foreach ($offsets as $i => $blockOffset) {
+					$blocks[] = new TSourceRange($stream, $this->_scanBase + (int) $blockOffset, (int) $counts[$i]);
+				}
+				$offsetsTag->setExternalData($blocks);
+			}
+		}
 	}
 
 	/**
@@ -520,6 +562,82 @@ class TTIFFDocument extends TComponent
 	 */
 	public function toBinary(): string
 	{
+		[$writes, $total] = $this->layoutWrites();
+		$out = str_repeat("\0", $total);
+		foreach ($writes as [$offset, $block]) {
+			$this->writeBytes($out, $offset, is_string($block) ? $block : $block->read());
+		}
+		return $out;
+	}
+
+	/**
+	 * Composes the document and writes it to a target, copying each strip/tile block that is
+	 * a deferred {@see TSourceRange} straight from the source in bounded memory rather than
+	 * materializing it, so a scanned TIFF far larger than memory is rewritten around a
+	 * metadata edit.  The writes are emitted in ascending offset order with the gaps between
+	 * them zero-filled, so no whole-file buffer is built.
+	 * @param mixed $target A writable {@see StreamInterface} or PHP stream resource.
+	 * @throws TInvalidDataTypeException When the target is neither.
+	 * @throws TIOException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		if (is_resource($target)) {
+			$target = TStream::fromResource($target, false);
+		}
+		if (!$target instanceof StreamInterface) {
+			throw new TInvalidDataTypeException('streamio_target_invalid', get_debug_type($target));
+		}
+		[$writes, $total] = $this->layoutWrites();
+		usort($writes, static fn (array $a, array $b): int => $a[0] <=> $b[0]);
+		$written = 0;
+		$position = 0;
+		foreach ($writes as [$offset, $block]) {
+			if ($offset > $position) {
+				$written += $this->streamWrite($target, str_repeat("\0", $offset - $position));   // zero-fill the gap
+				$position = $offset;
+			}
+			if (is_string($block)) {
+				$written += $this->streamWrite($target, $block);
+				$position += strlen($block);
+			} else {
+				$written += $block->writeTo($target);
+				$position += $block->getLength();
+			}
+		}
+		return $written;
+	}
+
+	/**
+	 * Writes a byte string to a stream, honoring partial writes.
+	 * @param StreamInterface $target The target stream.
+	 * @param string $bytes The bytes to write.
+	 * @throws TIOException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	private function streamWrite(StreamInterface $target, string $bytes): int
+	{
+		$length = strlen($bytes);
+		$total = 0;
+		while ($total < $length) {
+			$n = $target->write($total === 0 ? $bytes : substr($bytes, $total));
+			if ($n < 1) {
+				throw new TIOException('streamio_write_failed', $total, $length);
+			}
+			$total += $n;
+		}
+		return $total;
+	}
+
+	/**
+	 * Lays the document out and returns the ordered `[offset, block]` writes and the total
+	 * size, where each block is either a byte string or a deferred {@see TSourceRange}.  Both
+	 * {@see toBinary()} and {@see streamTo()} render from this, so their bytes match.
+	 * @return array{0: array<int, array{0: int, 1: string|TSourceRange}>, 1: int}
+	 */
+	protected function layoutWrites(): array
+	{
 		// Normalize the offset-pair tags: byte counts from the captured blocks, and
 		// ULong placeholder offsets (patched after allocation).
 		foreach ($this->_ifds as $ifd) {
@@ -551,7 +669,7 @@ class TTIFFDocument extends TComponent
 				}
 				$offsets = [];
 				foreach ($blocks as $block) {
-					$blockOffset = $this->allocate($cursor, strlen($block), $pins);
+					$blockOffset = $this->allocate($cursor, $this->blockLength($block), $pins);
 					$offsets[] = $blockOffset;
 					$blockWrites[] = [$blockOffset, $block];
 				}
@@ -564,17 +682,25 @@ class TTIFFDocument extends TComponent
 			$total = max($total, $start + $size);
 		}
 
-		// Render pass.
-		$out = str_repeat("\0", $total);
-		$this->writeBytes($out, 0, $this->getByteOrder() . $this->packUShort(self::Magic) . $this->packULong($this->_ifds !== [] ? $plan[0]['table'] : 0));
+		$writes = [[0, $this->getByteOrder() . $this->packUShort(self::Magic) . $this->packULong($this->_ifds !== [] ? $plan[0]['table'] : 0)]];
 		foreach ($plan as $index => $layout) {
 			$next = $plan[$index + 1]['table'] ?? 0;
-			$this->renderIfd($out, $layout, $next);
+			$this->collectIfdWrites($writes, $layout, $next);
 		}
-		foreach ($blockWrites as [$blockOffset, $block]) {
-			$this->writeBytes($out, $blockOffset, $block);
+		foreach ($blockWrites as $write) {
+			$writes[] = $write;
 		}
-		return $out;
+		return [$writes, $total];
+	}
+
+	/**
+	 * Returns a block's byte length, whether it is loaded bytes or a deferred range.
+	 * @param string|TSourceRange $block The external-data block.
+	 * @return int The length in bytes.
+	 */
+	protected function blockLength(string|TSourceRange $block): int
+	{
+		return is_string($block) ? strlen($block) : $block->getLength();
 	}
 
 	/**
@@ -591,7 +717,7 @@ class TTIFFDocument extends TComponent
 			if ($blocks === null) {
 				continue;
 			}
-			$lengths = array_map('strlen', $blocks);
+			$lengths = array_map(fn ($block): int => $this->blockLength($block), $blocks);
 			$countsTag = $ifd->getTag($countsId) ?? $ifd->setTagValues($countsId, TTIFFDataType::ULong, []);
 			if ($countsTag->getType() !== TTIFFDataType::UShort && $countsTag->getType() !== TTIFFDataType::ULong) {
 				$countsTag->setType(TTIFFDataType::ULong);
@@ -718,12 +844,13 @@ class TTIFFDocument extends TComponent
 	}
 
 	/**
-	 * Renders an IFD and its values into the output buffer.
-	 * @param string &$out The output buffer.
+	 * Appends an IFD's table and out-of-line value writes (and its sub-IFDs') to the write
+	 * list as `[offset, bytes]` pairs.
+	 * @param array<int, array{0: int, 1: string|TSourceRange}> &$writes The write list being built.
 	 * @param array $layout The {@see layoutIfd()} plan.
 	 * @param int $nextOffset The next-IFD pointer value.
 	 */
-	protected function renderIfd(string &$out, array $layout, int $nextOffset): void
+	protected function collectIfdWrites(array &$writes, array $layout, int $nextOffset): void
 	{
 		$ifd = $layout['ifd'];
 		$table = $this->packUShort(count($ifd->getTags()));
@@ -740,15 +867,15 @@ class TTIFFDocument extends TComponent
 			$table .= $this->packUShort($id) . $this->packUShort($type) . $this->packULong($count);
 			if (isset($layout['values'][$id])) {
 				$table .= $this->packULong($layout['values'][$id]);
-				$this->writeBytes($out, $layout['values'][$id], $data);
+				$writes[] = [(int) $layout['values'][$id], $data];
 			} else {
 				$table .= str_pad(substr($data, 0, 4), 4, "\0");
 			}
 		}
 		$table .= $this->packULong($nextOffset);
-		$this->writeBytes($out, $layout['table'], $table);
+		$writes[] = [(int) $layout['table'], $table];
 		foreach ($layout['subs'] as $sub) {
-			$this->renderIfd($out, $sub, 0);
+			$this->collectIfdWrites($writes, $sub, 0);
 		}
 	}
 

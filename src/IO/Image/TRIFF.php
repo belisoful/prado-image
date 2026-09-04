@@ -10,7 +10,10 @@
 
 namespace Prado\IO\Image;
 
+use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\Exceptions\TIOException;
+use Prado\IO\TStream;
+use Prado\IO\Util\TStreamHelper;
 use Prado\Prado;
 use Prado\TComponent;
 use Psr\Http\Message\StreamInterface;
@@ -65,6 +68,48 @@ class TRIFF extends TComponent
 			$stream->seek(0);
 		}
 		return static::fromString(static::sourceBytes($stream));
+	}
+
+	/**
+	 * Lazily reads a RIFF container from a seekable stream: every chunk header is read, but
+	 * a chunk whose id is in {@see $deferTypes} keeps its bytes as a deferred range into the
+	 * still-open source rather than loading them, so a container far larger than memory
+	 * opens for a metadata edit.  Pair it with {@see streamTo()}; the source must stay open
+	 * and seekable until then.
+	 * @param StreamInterface $stream The seekable source.
+	 * @param string[] $deferTypes The chunk ids to keep deferred (the large payloads).
+	 * @throws TIOException When the stream is not seekable or lacks a RIFF header.
+	 * @return static The lazily parsed container.
+	 */
+	public static function fromStreamLazy(StreamInterface $stream, array $deferTypes): static
+	{
+		if (!$stream->isSeekable()) {
+			throw new TIOException('imagefile_stream_not_seekable');
+		}
+		$stream->seek(0);
+		$header = TStreamHelper::copyToString($stream, 12);
+		if (strlen($header) < 12 || strncmp($header, TRIFFChunkType::Riff, 4) !== 0) {
+			throw new TIOException('riff_invalid', 'missing RIFF header');
+		}
+		$riff = Prado::createComponent(static::class);
+		$riff->_formType = substr($header, 8, 4);
+		while (true) {
+			$start = $stream->tell();
+			$chunkHeader = TStreamHelper::copyToString($stream, 8);
+			if (strlen($chunkHeader) < 8) {
+				break;   // no more chunks
+			}
+			$id = substr($chunkHeader, 0, 4);
+			$size = (int) unpack('V', substr($chunkHeader, 4, 4))[1];
+			$whole = 8 + $size + ($size & 1); // header + payload + even-length pad
+			if (in_array($id, $deferTypes, true)) {
+				$riff->_chunks[] = TImageChunk::deferred($id, $size, $start + 8, $stream, $start, $whole);
+			} else {
+				$riff->_chunks[] = new TImageChunk($id, $size, $start + 8, TStreamHelper::copyToString($stream, $size));
+			}
+			$stream->seek($start + $whole);
+		}
+		return $riff;
 	}
 
 	/**
@@ -220,6 +265,45 @@ class TRIFF extends TComponent
 			}
 		}
 		return TRIFFChunkType::Riff . pack('V', strlen($body)) . $body;
+	}
+
+	/**
+	 * Writes the container to a target, copying each deferred chunk straight from the source
+	 * in bounded memory and rebuilding every other (loaded or edited) chunk, so a container
+	 * opened with {@see fromStreamLazy()} is rewritten without holding its large payloads.
+	 * The RIFF size header is computed from the chunk sizes, deferred included.
+	 * @param mixed $target A writable {@see StreamInterface} or PHP stream resource.
+	 * @throws TInvalidDataTypeException When the target is neither.
+	 * @throws TIOException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		if (is_resource($target)) {
+			$target = TStream::fromResource($target, false);
+		}
+		if (!$target instanceof StreamInterface) {
+			throw new TInvalidDataTypeException('streamio_target_invalid', get_debug_type($target));
+		}
+		$bodyLength = strlen($this->getFormType());
+		foreach ($this->getChunks() as $chunk) {
+			$dataLength = $chunk->getIsDeferred() ? $chunk->getSize() : strlen($chunk->getData());
+			$bodyLength += 8 + $dataLength + ($dataLength & 1);
+		}
+		$written = TStreamHelper::copyToStream(TStream::fromString(TRIFFChunkType::Riff . pack('V', $bodyLength) . $this->getFormType()), $target);
+		foreach ($this->getChunks() as $chunk) {
+			if ($chunk->getIsDeferred()) {
+				$written += $chunk->copyDeferredTo($target);
+				continue;
+			}
+			$data = $chunk->getData();
+			$bytes = $chunk->getType() . pack('V', strlen($data)) . $data;
+			if (strlen($data) & 1) {
+				$bytes .= "\0";
+			}
+			$written += TStreamHelper::copyToStream(TStream::fromString($bytes), $target);
+		}
+		return $written;
 	}
 
 	/**

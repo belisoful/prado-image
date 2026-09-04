@@ -10,12 +10,17 @@
 
 namespace Prado\IO\Image;
 
+use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\Exceptions\TIOException;
 use Prado\IO\Image\GIF\TGIFExtension;
 use Prado\IO\Image\GIF\TGIFBlockType;
 use Prado\IO\Image\GIF\TGIFFrame;
 use Prado\IO\Image\Meta\TIPTC;
+use Prado\IO\TStream;
+use Prado\IO\Util\TStreamHelper;
+use Prado\Prado;
+use Psr\Http\Message\StreamInterface;
 
 /**
  * TGIF class.
@@ -888,6 +893,20 @@ class TGIF extends TImageFile
 	 */
 	protected function compose(): string
 	{
+		$out = $this->headerBytes();
+		foreach ($this->_blocks as $block) {
+			$out .= $block->toBinary();
+		}
+		return $out . chr(TGIFBlockType::Trailer) . $this->_trailingBytes;
+	}
+
+	/**
+	 * Returns the file header: the signature, the logical-screen descriptor, and the global
+	 * colour table.
+	 * @return string The header bytes.
+	 */
+	private function headerBytes(): string
+	{
 		$packed = ($this->_globalColorTable !== null ? 0x80 : 0)
 			| (($this->_colorResolution & 0x07) << 4)
 			| ($this->_globalSorted ? 0x08 : 0)
@@ -896,12 +915,202 @@ class TGIF extends TImageFile
 		$out = $this->_version
 			. pack('vv', $this->getWidthDirect() ?? 0, $this->getHeightDirect() ?? 0)
 			. chr($packed) . chr($this->_backgroundIndex) . chr($this->_aspectRatio);
-		if ($this->_globalColorTable !== null) {
-			$out .= $this->_globalColorTable;
+		return $this->_globalColorTable !== null ? $out . $this->_globalColorTable : $out;
+	}
+
+	/**
+	 * Lazily reads a GIF from a seekable stream: the block structure, extensions, and frame
+	 * headers are read, but each frame's LZW image-data run is kept as a deferred range into
+	 * the still-open source rather than loaded, so a GIF far larger than memory opens for a
+	 * metadata edit.  Pair it with {@see streamTo()}; the source must stay open and seekable
+	 * until then.
+	 * @param mixed $stream The seekable {@see StreamInterface} or PHP stream resource.
+	 * @throws TInvalidDataTypeException When the source is not a stream.
+	 * @throws TIOException When the stream is not seekable, lacks a GIF signature, or has a bad block.
+	 * @return static The lazily parsed GIF.
+	 */
+	public static function fromStreamLazy(mixed $stream): static
+	{
+		if (is_resource($stream)) {
+			$stream = TStream::fromResource($stream, false);
 		}
+		if (!$stream instanceof StreamInterface) {
+			throw new TInvalidDataTypeException('streamio_source_invalid', get_debug_type($stream));
+		}
+		$image = Prado::createComponent(static::class);
+		$image->parseStream($stream);
+		return $image;
+	}
+
+	/**
+	 * Walks the block stream of a seekable GIF, reading the small blocks and deferring each
+	 * frame's image-data run.
+	 * @param StreamInterface $stream The seekable source, positioned at the GIF start.
+	 * @throws TIOException When the stream is not seekable, lacks a GIF signature, or has a bad block.
+	 */
+	protected function parseStream(StreamInterface $stream): void
+	{
+		if (!$stream->isSeekable()) {
+			throw new TIOException('imagefile_stream_not_seekable');
+		}
+		$stream->seek(0);
+		$header = TStreamHelper::copyToString($stream, 13);
+		if (strlen($header) < 13 || !static::isGIF($header)) {
+			throw new TIOException('gif_invalid', 'missing GIF87a or GIF89a signature');
+		}
+		$this->_version = substr($header, 0, 6);
+		$this->setWidthDirect(unpack('v', substr($header, 6, 2))[1]);
+		$this->setHeightDirect(unpack('v', substr($header, 8, 2))[1]);
+		$packed = ord($header[10]);
+		$this->_colorResolution = ($packed >> 4) & 0x07;
+		$this->_globalSorted = ($packed & 0x08) !== 0;
+		$this->_backgroundIndex = ord($header[11]);
+		$this->_aspectRatio = ord($header[12]);
+		if ($packed & 0x80) {
+			$this->_globalColorTable = TStreamHelper::copyToString($stream, 3 * (2 << ($packed & 0x07)));
+		}
+		$pending = null;
+		while (($markerByte = TStreamHelper::copyToString($stream, 1)) !== '') {
+			$marker = ord($markerByte);
+			if ($marker === TGIFBlockType::Trailer) {
+				break;
+			}
+			if ($marker === TGIFBlockType::ExtensionIntroducer) {
+				$body = $this->readExtensionBody($stream);
+				$this->parseExtension(chr(TGIFBlockType::ExtensionIntroducer) . $body, 0, $pending);
+				continue;
+			}
+			if ($marker === TGIFBlockType::ImageSeparator) {
+				$this->parseFrameStream($stream, $pending);
+				$pending = null;
+				continue;
+			}
+			throw new TIOException('gif_invalid', sprintf('unexpected block marker 0x%02X', $marker));
+		}
+		$this->_trailingBytes = TStreamHelper::copyToString($stream);
+	}
+
+	/**
+	 * Reads the image descriptor and defers the frame's LZW image-data run.
+	 * @param StreamInterface $stream The seekable source, positioned after the image separator.
+	 * @param ?array $pending A pending graphic-control extension to attach.
+	 */
+	private function parseFrameStream(StreamInterface $stream, ?array $pending): void
+	{
+		$frame = new TGIFFrame();
+		$descriptor = TStreamHelper::copyToString($stream, 9);   // 8 geometry bytes + 1 packed byte
+		$d = unpack('vleft/vtop/vwidth/vheight', substr($descriptor, 0, 8));
+		$frame->setLeft($d['left']);
+		$frame->setTop($d['top']);
+		$frame->setWidth($d['width']);
+		$frame->setHeight($d['height']);
+		$packed = ord($descriptor[8]);
+		$frame->setInterlaced(($packed & 0x40) !== 0);
+		$frame->setSorted(($packed & 0x20) !== 0);
+		if ($packed & 0x80) {
+			$frame->setLocalColorTable(TStreamHelper::copyToString($stream, 3 * (2 << ($packed & 0x07))));
+		}
+		$frame->setMinCodeSize(max(2, ord(TStreamHelper::copyToString($stream, 1))));
+		$runStart = $stream->tell();
+		while (($size = ord(TStreamHelper::copyToString($stream, 1))) !== 0) {
+			$stream->seek($stream->tell() + $size);   // skip a data sub-block without loading it
+		}
+		$frame->setDeferredData($stream, $runStart, $stream->tell() - $runStart);
+		if ($pending !== null) {
+			$frame->setHasGraphicControl(true);
+			$frame->setGraphicControlReserved($pending['reserved']);
+			$frame->setDisposalMethod($pending['disposal']);
+			$frame->setUserInput($pending['userInput']);
+			$frame->setDelayTime($pending['delay']);
+			$frame->setTransparentIndex($pending['transparent']);
+		}
+		$this->_blocks[] = $frame;
+	}
+
+	/**
+	 * Reads one extension's bytes (its label and sub-block chain, or the raw XMP packet
+	 * ending in the magic trailer) so the shared {@see parseExtension()} can decode it.
+	 * @param StreamInterface $stream The source, positioned after the extension introducer.
+	 * @return string The extension bytes (label onward).
+	 */
+	private function readExtensionBody(StreamInterface $stream): string
+	{
+		$label = TStreamHelper::copyToString($stream, 1);
+		$first = TStreamHelper::copyToString($stream, 1);
+		if (ord($label) === TGIFBlockType::ApplicationLabel && ord($first) === 11) {
+			$identity = TStreamHelper::copyToString($stream, 11);
+			if ($identity === self::XmpIdentity) {   // raw XMP: not sub-block framed, ends at the magic trailer
+				return $label . $first . $identity . $this->readUntilTrailer($stream);
+			}
+			return $label . $first . $identity . $this->readSubBlockChain($stream);
+		}
+		if (ord($first) === 0) {
+			return $label . $first;
+		}
+		return $label . $first . TStreamHelper::copyToString($stream, ord($first)) . $this->readSubBlockChain($stream);
+	}
+
+	/**
+	 * Reads a sub-block chain (length-prefixed blocks ended by a zero block) verbatim.
+	 * @param StreamInterface $stream The source.
+	 * @return string The chain bytes, including the terminating zero.
+	 */
+	private function readSubBlockChain(StreamInterface $stream): string
+	{
+		$out = '';
+		while (true) {
+			$sizeByte = TStreamHelper::copyToString($stream, 1);
+			$out .= $sizeByte;
+			$size = ord($sizeByte);
+			if ($size === 0) {
+				return $out;
+			}
+			$out .= TStreamHelper::copyToString($stream, $size);
+		}
+	}
+
+	/**
+	 * Reads bytes until the magic trailer is seen, returning them (trailer included).
+	 * @param StreamInterface $stream The source.
+	 * @return string The bytes up to and including the trailer.
+	 */
+	private function readUntilTrailer(StreamInterface $stream): string
+	{
+		$trailer = TGIFExtension::MagicTrailer;
+		$length = strlen($trailer);
+		$buffer = '';
+		do {
+			$buffer .= TStreamHelper::copyToString($stream, 1);
+		} while (strlen($buffer) < $length || substr($buffer, -$length) !== $trailer);
+		return $buffer;
+	}
+
+	/**
+	 * Writes the GIF to a target, copying each frame's deferred image-data run straight from
+	 * the source in bounded memory and rebuilding every other block, so a GIF opened with
+	 * {@see fromStreamLazy()} is rewritten around a metadata edit without holding its pixels.
+	 * @param mixed $target A writable {@see StreamInterface} or PHP stream resource.
+	 * @throws TInvalidDataTypeException When the target is neither.
+	 * @throws TIOException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		if (is_resource($target)) {
+			$target = TStream::fromResource($target, false);
+		}
+		if (!$target instanceof StreamInterface) {
+			throw new TInvalidDataTypeException('streamio_target_invalid', get_debug_type($target));
+		}
+		$written = TStreamHelper::copyToStream(TStream::fromString($this->headerBytes()), $target);
 		foreach ($this->_blocks as $block) {
-			$out .= $block->toBinary();
+			if ($block instanceof TGIFFrame && $block->getIsDeferred()) {
+				$written += TStreamHelper::copyToStream(TStream::fromString($block->frameHeaderBytes()), $target);
+				$written += $block->copyDeferredTo($target);
+				continue;
+			}
+			$written += TStreamHelper::copyToStream(TStream::fromString($block->toBinary()), $target);
 		}
-		return $out . chr(TGIFBlockType::Trailer) . $this->_trailingBytes;
+		return $written + TStreamHelper::copyToStream(TStream::fromString(chr(TGIFBlockType::Trailer) . $this->_trailingBytes), $target);
 	}
 }

@@ -13,7 +13,10 @@ namespace Prado\IO\Image\GIF;
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\IO\Compression\TGIFLZWCompressor;
 use Prado\IO\Image\TImageGraphics;
+use Prado\IO\Stream\TLimitStream;
+use Prado\IO\Util\TStreamHelper;
 use Prado\TComponent;
+use Psr\Http\Message\StreamInterface;
 
 /**
  * TGIFFrame class.
@@ -79,6 +82,15 @@ class TGIFFrame extends TComponent
 
 	/** @var array<int, string> The LZW data sub-blocks, in the framing they were read with. */
 	private array $_dataSubBlocks = [];
+
+	/** @var ?StreamInterface The still-open source of a deferred frame, or null when loaded. */
+	private ?StreamInterface $_dataSource = null;
+
+	/** @var int The byte offset of the deferred image-data run within the source. */
+	private int $_dataOffset = 0;
+
+	/** @var int The length of the deferred image-data run in bytes. */
+	private int $_dataLength = 0;
 
 	/** @var bool Whether a Graphic Control Extension precedes the frame. */
 	private bool $_hasGraphicControl = false;
@@ -355,16 +367,82 @@ class TGIFFrame extends TComponent
 	 */
 	public function getDataSubBlocks(): array
 	{
+		if ($this->_dataSource !== null) {
+			return self::splitSubBlocks((new TLimitStream($this->_dataSource, $this->_dataLength, $this->_dataOffset))->getContents());
+		}
 		return $this->_dataSubBlocks;
 	}
 
 	/**
-	 * Replaces the LZW data sub-blocks, keeping the given framing.
+	 * Replaces the LZW data sub-blocks, keeping the given framing and loading the frame (a
+	 * deferred range is dropped, since the data is now held directly).
 	 * @param array<int, string> $value The sub-blocks, each at most 255 bytes.
 	 */
 	public function setDataSubBlocks(array $value): void
 	{
 		$this->_dataSubBlocks = array_values($value);
+		$this->_dataSource = null;
+	}
+
+	/**
+	 * Points the frame's image data at a deferred range in a still-open source, for a
+	 * streaming parse that reads the framing but not the compressed bytes.
+	 * @param StreamInterface $source The still-open, seekable source.
+	 * @param int $offset The byte offset of the image-data run within the source.
+	 * @param int $length The length of the image-data run in bytes.
+	 */
+	public function setDeferredData(StreamInterface $source, int $offset, int $length): void
+	{
+		$this->_dataSource = $source;
+		$this->_dataOffset = $offset;
+		$this->_dataLength = $length;
+		$this->_dataSubBlocks = [];
+	}
+
+	/**
+	 * Indicates whether the frame's image data is deferred to its source rather than loaded.
+	 * @return bool Whether the frame is deferred.
+	 */
+	public function getIsDeferred(): bool
+	{
+		return $this->_dataSource !== null;
+	}
+
+	/**
+	 * Copies the deferred image-data run straight from the source to a target in bounded
+	 * memory, for a streaming writer.
+	 * @param StreamInterface $target The stream to write to.
+	 * @throws \RuntimeException When the frame is not deferred.
+	 * @return int The number of bytes copied.
+	 */
+	public function copyDeferredTo(StreamInterface $target): int
+	{
+		if ($this->_dataSource === null) {
+			throw new \RuntimeException('The frame is not deferred; its data is already loaded.');
+		}
+		return TStreamHelper::copyRange($this->_dataSource, $this->_dataOffset, $this->_dataLength, $target);
+	}
+
+	/**
+	 * Splits a raw image-data run (length-prefixed sub-blocks ended by a zero block) into
+	 * its sub-block chunks.
+	 * @param string $run The raw run.
+	 * @return array<int, string> The sub-block chunks.
+	 */
+	private static function splitSubBlocks(string $run): array
+	{
+		$chunks = [];
+		$i = 0;
+		$len = strlen($run);
+		while ($i < $len) {
+			$size = ord($run[$i]);
+			if ($size === 0) {
+				break;
+			}
+			$chunks[] = substr($run, $i + 1, $size);
+			$i += 1 + $size;
+		}
+		return $chunks;
 	}
 
 	/**
@@ -383,6 +461,7 @@ class TGIFFrame extends TComponent
 	public function setLzwData(string $value): void
 	{
 		$this->_dataSubBlocks = $value === '' ? [] : str_split($value, self::MaxSubBlock);
+		$this->_dataSource = null;
 	}
 
 	/**
@@ -492,6 +571,17 @@ class TGIFFrame extends TComponent
 	 */
 	public function toBinary(): string
 	{
+		return $this->frameHeaderBytes() . $this->dataBytes();
+	}
+
+	/**
+	 * Returns the frame's bytes up to (and including) the LZW minimum-code-size: the
+	 * graphic-control extension, the image descriptor, the local colour table, and the
+	 * minimum-code-size byte — everything before the data sub-blocks.
+	 * @return string The frame header bytes.
+	 */
+	public function frameHeaderBytes(): string
+	{
 		$out = '';
 		if ($this->_hasGraphicControl) {
 			$packed = (($this->_graphicControlReserved & 0x07) << 5)
@@ -510,7 +600,20 @@ class TGIFFrame extends TComponent
 		if ($this->_localColorTable !== null) {
 			$out .= $this->_localColorTable;
 		}
-		$out .= chr($this->_minCodeSize);
+		return $out . chr($this->_minCodeSize);
+	}
+
+	/**
+	 * Returns the frame's image-data run (framed sub-blocks ended by a zero block),
+	 * materializing a deferred frame's data from its source.
+	 * @return string The image-data run.
+	 */
+	private function dataBytes(): string
+	{
+		if ($this->_dataSource !== null) {
+			return (new TLimitStream($this->_dataSource, $this->_dataLength, $this->_dataOffset))->getContents();
+		}
+		$out = '';
 		foreach ($this->_dataSubBlocks as $block) {
 			foreach (str_split($block, self::MaxSubBlock) as $piece) {
 				$out .= chr(strlen($piece)) . $piece;

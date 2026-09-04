@@ -21,8 +21,11 @@ use Prado\IO\Filter\TStreamCodecFilter;
  * differences and {@see DecodeName} accumulates.  {@see registerOnce()} registers both.
  *
  * The row geometry is passed as the attach-time parameter array: `columns` (pixels per
- * row, required) and `samples` (channels per pixel, default 1).  The filter carries at
- * most one partial row between chunks; a trailing partial row transforms at close.
+ * row, required) and `samples` (channels per pixel, default 1).  The filter holds no
+ * algorithm of its own: it drives the same incremental
+ * {@see THorizontalPredictorEncoder}/{@see THorizontalPredictorDecoder} engine that
+ * {@see THorizontalPredictor} uses, so it carries at most one partial row between chunks
+ * and transforms a trailing partial row at close, exactly as the whole-string form does.
  *
  * ```php
  * THorizontalPredictorFilter::registerOnce();
@@ -42,17 +45,8 @@ class THorizontalPredictorFilter extends TStreamCodecFilter
 	/** @var string The filter name that accumulates (undoes the differencing). */
 	public const DecodeName = 'prado.tiffpredictor.decode';
 
-	/** @var bool Whether this instance accumulates (set from the filter name). */
-	private bool $_decode = false;
-
-	/** @var int The pixels per row. */
-	private int $_columns = 0;
-
-	/** @var int The interleaved channels per pixel. */
-	private int $_samples = 1;
-
-	/** @var string The buffered partial row awaiting more input. */
-	private string $_carry = '';
+	/** @var IStreamCodec The engine for this instance's direction and geometry. */
+	private IStreamCodec $_codec;
 
 	/**
 	 * Returns the default (encode) filter name.
@@ -78,60 +72,41 @@ class THorizontalPredictorFilter extends TStreamCodecFilter
 	}
 
 	/**
-	 * Picks the direction from the filter name and the row geometry from the attach-time
-	 * parameters when PHP creates the filter.
+	 * Picks the engine from the filter name and the row geometry from the attach-time
+	 * parameters when PHP creates the filter.  Invalid geometry fails the attach rather
+	 * than throwing, so the geometry is validated here before the engine is built.
 	 * @return bool Whether `columns` (and any `samples`) form a valid positive geometry.
 	 */
 	public function onCreate(): bool
 	{
-		$this->_decode = ($this->filtername === static::DecodeName);
 		$params = is_array($this->params) ? $this->params : [];
-		$this->_columns = (int) ($params['columns'] ?? 0);
-		$this->_samples = (int) ($params['samples'] ?? 1);
-		return $this->_columns >= 1 && $this->_samples >= 1;
+		$columns = (int) ($params['columns'] ?? 0);
+		$samples = (int) ($params['samples'] ?? 1);
+		if ($columns < 1 || $samples < 1) {
+			return false;
+		}
+		$this->_codec = ($this->filtername === static::DecodeName)
+			? THorizontalPredictor::decoder($columns, $samples)
+			: THorizontalPredictor::encoder($columns, $samples);
+		return true;
 	}
 
 	/**
-	 * Transforms the whole rows the carry now holds, keeping any partial row.
+	 * Feeds a chunk to the engine.
 	 * @param string $data The input chunk.
-	 * @return string The transformed bytes of the completed rows.
+	 * @return string The transformed bytes produced from this chunk.
 	 */
 	protected function process(string $data): string
 	{
-		$this->_carry .= $data;
-		$rowBytes = $this->_columns * $this->_samples;
-		$whole = intdiv(strlen($this->_carry), $rowBytes) * $rowBytes;
-		if ($whole === 0) {
-			return '';
-		}
-		$rows = substr($this->_carry, 0, $whole);
-		$this->_carry = substr($this->_carry, $whole);
-		return $this->transform($rows);
+		return $this->_codec->add($data);
 	}
 
 	/**
-	 * Transforms the trailing partial row when the stream closes.
-	 * @return string The transformed partial row, or '' when none is pending.
+	 * Flushes the engine's trailing partial row when the stream closes.
+	 * @return string The final bytes.
 	 */
 	protected function finish(): string
 	{
-		if ($this->_carry === '') {
-			return '';
-		}
-		$rows = $this->_carry;
-		$this->_carry = '';
-		return $this->transform($rows);
-	}
-
-	/**
-	 * Runs the configured direction over complete rows.
-	 * @param string $rows The row bytes to transform.
-	 * @return string The transformed bytes.
-	 */
-	private function transform(string $rows): string
-	{
-		return $this->_decode
-			? THorizontalPredictor::decode($rows, $this->_columns, $this->_samples)
-			: THorizontalPredictor::encode($rows, $this->_columns, $this->_samples);
+		return $this->_codec->finish();
 	}
 }

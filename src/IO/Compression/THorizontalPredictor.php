@@ -24,7 +24,9 @@ use Prado\Exceptions\TIOException;
  * A row is `columns * samples` bytes: `columns` pixels of `samples` interleaved channels
  * (1 for grayscale, 3 for RGB).  Each row restarts the prediction, and a trailing partial
  * row transforms by the same rule.  {@see encode()} differences, {@see decode()}
- * accumulates.  The streaming form is {@see THorizontalPredictorFilter}.
+ * accumulates.  The incremental form is {@see encoder()}/{@see decoder()} (the
+ * {@see THorizontalPredictorEncoder}/{@see THorizontalPredictorDecoder} engines), which
+ * the streaming {@see THorizontalPredictorFilter} drives.
  *
  * ```php
  * $packed = TLZWCompressor::compress(THorizontalPredictor::encode($rgb, $width, 3));
@@ -36,6 +38,32 @@ use Prado\Exceptions\TIOException;
  */
 class THorizontalPredictor
 {
+	/**
+	 * Returns a fresh incremental encoder context (like {@see deflate_init()}), buffering
+	 * whole rows of the given geometry.
+	 * @param int $columns The pixels per row.
+	 * @param int $samples The interleaved channels per pixel. Default 1.
+	 * @throws TIOException When columns or samples is not positive.
+	 * @return THorizontalPredictorEncoder The encoder engine.
+	 */
+	public static function encoder(int $columns, int $samples = 1): THorizontalPredictorEncoder
+	{
+		return new THorizontalPredictorEncoder($columns, $samples);
+	}
+
+	/**
+	 * Returns a fresh incremental decoder context (like {@see inflate_init()}), buffering
+	 * whole rows of the given geometry.
+	 * @param int $columns The pixels per row.
+	 * @param int $samples The interleaved channels per pixel. Default 1.
+	 * @throws TIOException When columns or samples is not positive.
+	 * @return THorizontalPredictorDecoder The decoder engine.
+	 */
+	public static function decoder(int $columns, int $samples = 1): THorizontalPredictorDecoder
+	{
+		return new THorizontalPredictorDecoder($columns, $samples);
+	}
+
 	/**
 	 * Applies horizontal differencing to rows of 8-bit samples.
 	 * @param string $data The raw sample bytes, in row-major order.

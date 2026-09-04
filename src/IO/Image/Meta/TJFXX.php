@@ -10,7 +10,9 @@
 
 namespace Prado\IO\Image\Meta;
 
+use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\Exceptions\TInvalidDataValueException;
+use Prado\IO\TStream;
 use Prado\IO\Image\TImageGraphics;
 use Prado\IO\Image\TImageGraphicsMode;
 use Prado\TComponent;
@@ -74,14 +76,42 @@ class TJFXX extends TComponent
 		return strncmp($data, self::IDENTIFIER, 5) === 0;
 	}
 
+
+
+
+	/**
+	 * Drains a JFXX byte source: a string passes through, and a {@see StreamInterface} or
+	 * PHP stream resource (wrapped without taking ownership) is read from its current
+	 * position to the end.  It matches {@see \Prado\IO\Image\TStreamIOTrait::sourceBytes()},
+	 * which this class does not use because it has no {@see toBinary()} to write back.
+	 * @param mixed $data The string, stream, or stream resource.
+	 * @throws TInvalidDataTypeException When the data is none of those.
+	 * @return string The bytes.
+	 */
+	protected static function parseBytes(mixed $data): string
+	{
+		if (is_string($data)) {
+			return $data;
+		}
+		if (is_resource($data)) {
+			$data = TStream::fromResource($data, false);
+		}
+		if ($data instanceof StreamInterface) {
+			return $data->getContents();
+		}
+		throw new TInvalidDataTypeException('streamio_source_invalid', get_debug_type($data));
+	}
+
 	/**
 	 * Parses a JFXX APP0 payload into a populated instance.
-	 * @param StreamInterface|string $data The JFXX binary data.
+	 * @param mixed $data The JFXX binary data as a string, a {@see StreamInterface}, or a
+	 *   PHP stream resource (wrapped without taking ownership).
+	 * @throws TInvalidDataTypeException When the data is none of those.
 	 * @return false|TJFXX The parsed JFXX, or false when the data is not JFXX.
 	 */
-	public static function parse(string|StreamInterface $data): false|TJFXX
+	public static function parse(mixed $data): false|TJFXX
 	{
-		$bytes = $data instanceof StreamInterface ? $data->getContents() : $data;
+		$bytes = static::parseBytes($data);
 		if (strlen($bytes) < 6 || !self::isJFXX($bytes)) {
 			return false;
 		}

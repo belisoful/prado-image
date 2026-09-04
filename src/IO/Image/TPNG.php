@@ -15,6 +15,10 @@ use Prado\Exceptions\TIOException;
 use Prado\IO\Image\Meta\TIPTC;
 use Prado\IO\Image\PNG\TAPNGFrame;
 use Prado\IO\Image\PNG\TPNGChunkType;
+use Prado\IO\TStream;
+use Prado\IO\Util\TStreamHelper;
+use Prado\Prado;
+use Psr\Http\Message\StreamInterface;
 
 /**
  * TPNG class.
@@ -108,6 +112,16 @@ class TPNG extends TImageFile
 	public function getFormat(): string
 	{
 		return 'PNG';
+	}
+
+	/**
+	 * Indicates whether the bytes begin with the PNG signature.
+	 * @param string $data The candidate image bytes.
+	 * @return bool Whether the data is a PNG.
+	 */
+	public static function isPNG(string $data): bool
+	{
+		return strncmp($data, self::Signature, 8) === 0;
 	}
 
 	/**
@@ -934,6 +948,105 @@ class TPNG extends TImageFile
 				break;
 			}
 		}
+	}
+
+	/**
+	 * Lazily reads a PNG from a seekable stream: the chunk framing and the small metadata
+	 * chunks are read, but each `IDAT` pixel chunk is kept as a deferred range into the
+	 * still-open source rather than loaded, so a PNG far larger than memory opens for a
+	 * metadata edit.  Pair it with {@see streamTo()}, which copies the deferred pixel
+	 * chunks straight through; the source must stay open and seekable until then.
+	 * @param mixed $stream The seekable {@see StreamInterface} or PHP stream resource.
+	 * @throws TInvalidDataTypeException When the source is not a stream.
+	 * @throws TIOException When the stream is not seekable or lacks the PNG signature.
+	 * @return static The lazily parsed PNG.
+	 */
+	public static function fromStreamLazy(mixed $stream): static
+	{
+		if (is_resource($stream)) {
+			$stream = TStream::fromResource($stream, false);
+		}
+		if (!$stream instanceof StreamInterface) {
+			throw new TInvalidDataTypeException('streamio_source_invalid', get_debug_type($stream));
+		}
+		if ($stream->isSeekable()) {
+			$stream->seek(0);
+		}
+		$image = Prado::createComponent(static::class);
+		$image->parseStream($stream);
+		return $image;
+	}
+
+	/**
+	 * Walks the chunk framing of a seekable stream, deferring each `IDAT` payload.
+	 * @param StreamInterface $stream The seekable stream, positioned at the PNG start.
+	 * @throws TIOException When the stream is not seekable or lacks the PNG signature.
+	 */
+	protected function parseStream(StreamInterface $stream): void
+	{
+		if (!$stream->isSeekable()) {
+			throw new TIOException('imagefile_stream_not_seekable');
+		}
+		if (TStreamHelper::copyToString($stream, 8) !== self::Signature) {
+			throw new TIOException('png_invalid', 'missing PNG signature');
+		}
+		$this->_chunks = [];
+		while (true) {
+			$start = $stream->tell();
+			$header = TStreamHelper::copyToString($stream, 8);   // 4-byte length + 4-byte type
+			if (strlen($header) < 8) {
+				break;   // the stream ended (a well-formed PNG has already broken at IEND)
+			}
+			$size = (int) unpack('N', substr($header, 0, 4))[1];
+			$type = substr($header, 4, 4);
+			if ($type === TPNGChunkType::ImageData) {
+				// Defer the whole on-disk chunk (length + type + payload + CRC) and skip its bytes.
+				$this->_chunks[] = TImageChunk::deferred($type, $size, $start + 8, $stream, $start, 8 + $size + 4);
+				$stream->seek($start + 8 + $size + 4);
+				continue;
+			}
+			$payload = TStreamHelper::copyToString($stream, $size);
+			$stream->seek($stream->tell() + 4);   // skip the CRC
+			$this->_chunks[] = new TImageChunk($type, $size, $start + 8, $payload);
+			if ($type === TPNGChunkType::Header && strlen($payload) >= 8) {
+				$this->setWidthDirect((int) unpack('N', substr($payload, 0, 4))[1]);
+				$this->setHeightDirect((int) unpack('N', substr($payload, 4, 4))[1]);
+			}
+			if ($type === TPNGChunkType::End) {
+				break;
+			}
+		}
+	}
+
+	/**
+	 * Writes the PNG to a target, copying each deferred `IDAT` chunk straight from the
+	 * source in bounded memory and rebuilding every other (loaded or edited) chunk.  A PNG
+	 * opened with {@see fromStreamLazy()} is rewritten around a metadata edit without ever
+	 * holding its pixels; a fully loaded PNG streams the same bytes {@see toBinary()} would.
+	 * @param mixed $target A writable {@see StreamInterface} or PHP stream resource.
+	 * @throws TInvalidDataTypeException When the target is neither.
+	 * @throws TIOException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		if (is_resource($target)) {
+			$target = TStream::fromResource($target, false);
+		}
+		if (!$target instanceof StreamInterface) {
+			throw new TInvalidDataTypeException('streamio_target_invalid', get_debug_type($target));
+		}
+		$written = TStreamHelper::copyToStream(TStream::fromString(self::Signature), $target);
+		foreach ($this->getChunks() as $chunk) {
+			if ($chunk->getIsDeferred()) {
+				$written += $chunk->copyDeferredTo($target);
+				continue;
+			}
+			$type = $chunk->getType();
+			$data = $chunk->getData();
+			$written += TStreamHelper::copyToStream(TStream::fromString(pack('N', strlen($data)) . $type . $data . pack('N', crc32($type . $data))), $target);
+		}
+		return $written;
 	}
 
 	/**

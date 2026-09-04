@@ -12,6 +12,7 @@ namespace Prado\IO\Image;
 
 use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\IO\TResourceType;
+use Prado\IO\TStream;
 
 /**
  * TPhotoshop8BIM class.
@@ -49,9 +50,10 @@ class TPhotoshop8BIM
 			return strncmp($data, self::PHOTOSHOP_HEADER, strlen(self::PHOTOSHOP_HEADER)) === 0;
 		}
 		if (is_resource($data) && get_resource_type($data) === TResourceType::Stream) {
-			$place = ftell($data);
-			$id = fread($data, strlen(self::PHOTOSHOP_HEADER));
-			fseek($data, $place);
+			$stream = TStream::fromResource($data, false);   // wrap without taking ownership
+			$place = $stream->tell();
+			$id = $stream->read(strlen(self::PHOTOSHOP_HEADER));
+			$stream->seek($place);
 			return $id === self::PHOTOSHOP_HEADER;
 		}
 		throw new TInvalidDataTypeException('ps8bim_not_a_stream');
@@ -139,39 +141,41 @@ class TPhotoshop8BIM
 	 */
 	private static function iptcDecodeStream(mixed $stream): false|int
 	{
-		$startPosition = ftell($stream);
+		$stream = TStream::fromResource($stream, false);   // wrap without taking ownership
+		$startPosition = $stream->tell();
 		$i = 0;
-		while (!feof($stream) && (fgetc($stream) !== "\0") && $i++ < 20) {
+		while (!$stream->eof() && ($stream->read(1) !== "\0") && $i++ < 20) {
 		}
 		if ($i >= 20) {
-			fseek($stream, $startPosition);
+			$stream->seek($startPosition);
 			return false;
 		}
-		if (fread($stream, 4) !== self::PHOTOSHOP_8BIM_TYPE) {
-			fseek($stream, $startPosition);
+		$type = $stream->read(4);
+		if ($type !== self::PHOTOSHOP_8BIM_TYPE) {
+			$stream->seek($startPosition);
 			return false;
 		}
-		$tag = fread($stream, 2);
+		$tag = $stream->read(2);
 		if (strlen($tag) !== 2 || unpack('n', $tag)[1] !== self::IPTCData) {
-			fseek($stream, $startPosition);
+			$stream->seek($startPosition);
 			return false;
 		}
 		$i = 0;
-		while (!feof($stream) && (fgetc($stream) !== "\0") && $i++ <= 256) {
+		while (!$stream->eof() && ($stream->read(1) !== "\0") && $i++ <= 256) {
 		}
 		if ($i > 256) {
-			fseek($stream, $startPosition);
+			$stream->seek($startPosition);
 			return false;
 		}
-		if ((ftell($stream) - $startPosition) & 1) {
-			if (strlen((string) fread($stream, 1)) !== 1) {
-				fseek($stream, $startPosition);
+		if (($stream->tell() - $startPosition) & 1) {
+			if (strlen($stream->read(1)) !== 1) {
+				$stream->seek($startPosition);
 				return false;
 			}
 		}
-		$length = fread($stream, 4);
-		if (strlen($length) !== 4) {
-			fseek($stream, $startPosition);
+		$length = $stream->read(4);
+		if (!isset($length[3])) {   // fewer than 4 bytes: a truncated length field
+			$stream->seek($startPosition);
 			return false;
 		}
 		return unpack('N', $length)[1];

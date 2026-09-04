@@ -10,6 +10,7 @@
 
 namespace Prado\IO\Image;
 
+use Prado\Exceptions\TIOException;
 use Prado\IO\Compression\TCCITTFaxCompressor;
 use Prado\IO\Compression\THorizontalPredictor;
 use Prado\IO\Compression\TLZWCompressor;
@@ -23,6 +24,7 @@ use Prado\IO\Stream\TReservedSpaceMode;
 use Prado\IO\Stream\TReservedSpaceStream;
 use Prado\IO\TStream;
 use Prado\Prado;
+use Psr\Http\Message\StreamInterface;
 
 /**
  * TTIFF class.
@@ -116,6 +118,39 @@ class TTIFF extends TImageFile
 	protected function parse(): void
 	{
 		$this->_exif = TEXIF::fromTiffString($this->getBytesDirect());
+		$this->readMetadataFromExif();
+	}
+
+	/**
+	 * Lazily reads a TIFF from a seekable stream: the metadata is scanned by seeking, and
+	 * the strip/tile pixel data is kept as deferred ranges into the still-open source rather
+	 * than loaded, so a TIFF far larger than memory opens for a metadata edit.  Pair it with
+	 * {@see streamTo()}, which copies the strips straight through with their offsets
+	 * rewritten; the source must stay open and seekable until then.
+	 * @param mixed $stream The seekable {@see StreamInterface} or PHP stream resource.
+	 * @throws TIOException When the stream is not seekable.
+	 * @throws \Prado\Exceptions\TInvalidDataTypeException When the source is not a stream.
+	 * @return static The lazily parsed TIFF.
+	 */
+	public static function fromStreamLazy(mixed $stream): static
+	{
+		if (is_resource($stream)) {
+			$stream = TStream::fromResource($stream, false);
+		}
+		if ($stream instanceof StreamInterface && $stream->isSeekable()) {
+			$stream->seek(0);
+		}
+		$image = Prado::createComponent(static::class);
+		$image->_exif = TEXIF::scanStream($stream, true);   // capture strips as deferred ranges
+		$image->readMetadataFromExif();
+		return $image;
+	}
+
+	/**
+	 * Reads the dimensions, IPTC, and ICC profile from the parsed EXIF/TIFF structure.
+	 */
+	protected function readMetadataFromExif(): void
+	{
 		$ifd0 = $this->_exif->getIfd0();
 		$width = $ifd0->getTagValue(self::WidthTag);
 		$height = $ifd0->getTagValue(self::HeightTag);
@@ -378,5 +413,30 @@ class TTIFF extends TImageFile
 			$this->_exif->getIfd0()->setTagValues(self::ICCTag, TTIFFDataType::Undefined, $icc);
 		}
 		return $this->_exif->toBinary();
+	}
+
+	/**
+	 * Writes the TIFF to a target, copying each deferred strip/tile straight from the source
+	 * in bounded memory (offsets rewritten), so a TIFF opened with {@see fromStreamLazy()}
+	 * is rewritten around a metadata edit without holding its pixels.  A fully loaded TIFF
+	 * streams the same bytes {@see toBinary()} would.
+	 * @param mixed $target A writable {@see StreamInterface} or PHP stream resource.
+	 * @throws \Prado\Exceptions\TInvalidDataTypeException When the target is neither.
+	 * @throws TIOException When the target stops accepting bytes.
+	 * @return int The number of bytes written.
+	 */
+	public function streamTo(mixed $target): int
+	{
+		if ($this->_exif === null) {
+			return $this->writeTo($target);
+		}
+		$this->_exif->setIPTC($this->getIptcDirect());
+		$icc = $this->getICCProfileDirect();
+		if ($icc === null) {
+			$this->_exif->getIfd0()->removeTag(self::ICCTag);
+		} else {
+			$this->_exif->getIfd0()->setTagValues(self::ICCTag, TTIFFDataType::Undefined, $icc);
+		}
+		return $this->_exif->streamTo($target);
 	}
 }
