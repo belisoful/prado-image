@@ -10,5 +10,6 @@
 require_once(__DIR__ . '/../../vendor/autoload.php');
 require_once(__DIR__ . '/ICCProfileBuilder.php');
 require_once(__DIR__ . '/PseudoRandomBytes.php');
+require_once(__DIR__ . '/TChunkedWriteStream.php');
 
 \Prado\Exceptions\TException::addMessageFile(__DIR__ . '/../../config/errorMessages.txt');

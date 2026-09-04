@@ -1058,15 +1058,15 @@ class TGIF extends TImageFile
 	private function readSubBlockChain(StreamInterface $stream): string
 	{
 		$out = '';
-		while (true) {
+		do {
 			$sizeByte = TStreamHelper::copyToString($stream, 1);
 			$out .= $sizeByte;
 			$size = ord($sizeByte);
-			if ($size === 0) {
-				return $out;
+			if ($size !== 0) {
+				$out .= TStreamHelper::copyToString($stream, $size);
 			}
-			$out .= TStreamHelper::copyToString($stream, $size);
-		}
+		} while ($size !== 0);
+		return $out;
 	}
 
 	/**

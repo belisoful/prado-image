@@ -126,6 +126,17 @@ class TTIFFStreamingTest extends PHPUnit\Framework\TestCase
 		TTIFF::fromStreamLazy(TStream::fromString($this->tiffBytes()))->streamTo(new TChunkedWriteStream(0));
 	}
 
+	public function testStreamToHonorsPartialWrites()
+	{
+		// A target that accepts only a few bytes per call is written in as many calls as it
+		// takes, and the bytes arrive in order and complete.
+		$bytes = $this->tiffBytes();
+		$trickle = new TChunkedWriteStream(5);
+		$written = TTIFF::fromStreamLazy(TStream::fromString($bytes))->streamTo($trickle);
+		self::assertSame(strlen($trickle->buffer), $written);
+		self::assertSame(bin2hex((string) TTIFF::fromString($bytes)->toBinary()), bin2hex($trickle->buffer));
+	}
+
 	public function testFromStreamLazyRejectsANonSeekableStream()
 	{
 		$this->expectException(\Prado\Exceptions\TIOException::class);
