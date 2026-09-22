@@ -1,5 +1,8 @@
 <?php
 
+use Prado\IO\Image\TAVI;
+use Prado\IO\Image\TBMFF;
+use Prado\IO\Image\TJXL;
 use Prado\IO\Image\IPrivacyScrubbable;
 use Prado\IO\Image\Meta\TEXIF;
 use Prado\IO\Image\Meta\TIPTC;
@@ -471,6 +474,64 @@ class TPrivacyScrubTest extends PHPUnit\Framework\TestCase
 			$this->encoded('imagegif'),
 			fn (TGIF $gif) => $gif->addComment('hi Jane'),
 			fn (TGIF $gif) => self::assertSame([], $gif->getComments(), 'GIF comment gone'),
+		);
+	}
+
+	public function testAviScrubReachesEveryCarrier()
+	{
+		$this->assertContainerScrubReachesEveryCarrier(
+			TAVI::class,
+			ContainerFixtures::avi(),
+			function (TAVI $avi) {
+				$avi->setInfoValue(TAVI::InfoArtist, 'Jane Doe');
+				$avi->setInfoValue(TAVI::InfoName, 'Her Movie');
+				$avi->setDigitizationTime('Mon Jan 01 00:00:00 2024');
+			},
+			function (TAVI $avi) {
+				self::assertNull($avi->getInfo()[TAVI::InfoArtist] ?? null, 'AVI INFO artist gone');
+				self::assertNull($avi->getInfo()[TAVI::InfoName] ?? null, 'AVI INFO name gone');
+				self::assertNull($avi->getDigitizationTime(), 'AVI IDIT gone');
+			},
+		);
+	}
+
+	/** A movie keeps its identifying fields in `moov`/`udta`, not in an item. */
+	public function testBmffMovieScrubReachesEveryCarrier()
+	{
+		$this->assertContainerScrubReachesEveryCarrier(
+			TBMFF::class,
+			ContainerFixtures::movie(),
+			function (TBMFF $bmff) {
+				$bmff->setUserDataValue(TBMFF::KeyArtist, 'Jane Doe');
+				$bmff->setUserDataValue(TBMFF::KeyLocation, '+34.05-118.24/');
+				$bmff->setUserDataValue(TBMFF::KeyEncoder, 'TestEnc');
+			},
+			function (TBMFF $bmff) {
+				self::assertNull($bmff->getUserDataValue(TBMFF::KeyArtist), 'BMFF author user data gone');
+				self::assertNull($bmff->getUserDataValue(TBMFF::KeyLocation), 'BMFF location user data gone');
+				self::assertNull($bmff->getUserDataValue(TBMFF::KeyEncoder), 'BMFF encoder user data gone');
+			},
+		);
+	}
+
+	/** A still keeps its EXIF in a `meta` item instead, which the same one call must reach. */
+	public function testBmffStillScrubReachesItsExifItem()
+	{
+		$this->assertContainerScrubReachesEveryCarrier(
+			TBMFF::class,
+			ContainerFixtures::heif(),
+			fn (TBMFF $bmff) => null,
+			fn (TBMFF $bmff) => null,
+		);
+	}
+
+	public function testJxlScrubReachesEveryCarrier()
+	{
+		$this->assertContainerScrubReachesEveryCarrier(
+			TJXL::class,
+			ContainerFixtures::jxl(),
+			fn (TJXL $jxl) => null,
+			fn (TJXL $jxl) => null,
 		);
 	}
 

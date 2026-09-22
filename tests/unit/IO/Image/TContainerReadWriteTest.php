@@ -1,5 +1,8 @@
 <?php
 
+use Prado\IO\Image\TAVI;
+use Prado\IO\Image\TBMFF;
+use Prado\IO\Image\TJXL;
 use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\Exceptions\TIOException;
 use Prado\IO\Image\IImageGraphicsLibrary;
@@ -98,6 +101,50 @@ class TContainerReadWriteTest extends PHPUnit\Framework\TestCase
 			self::assertTrue($round->hasICCProfile(), "$name hasICCProfile");
 			self::assertTrue($round->hasIPTC(), "$name hasIPTC");
 		}
+	}
+
+	/**
+	 * The other half of the matrix: a carrier the format has no home for must be **refused**,
+	 * not accepted and dropped.  Clearing is always allowed, and a refusal must leave the file
+	 * as it was rather than half-written.  WebP is proved on its own below, because its fixture
+	 * needs GD's optional WebP support and a skip here would take the other containers with it.
+	 */
+	public function testEveryContainerRefusesTheCarriersItHasNoHomeFor()
+	{
+		$cases = [
+			'GIF' => [TGIF::class, fn (): string => $this->gif(), ['IPTC']],
+			'AVI' => [TAVI::class, fn (): string => ContainerFixtures::avi(), ['EXIF', 'ICCProfile', 'IPTC']],
+			'BMFF' => [TBMFF::class, fn (): string => ContainerFixtures::heif(), ['IPTC']],
+			'JXL' => [TJXL::class, fn (): string => ContainerFixtures::jxl(), ['ICCProfile', 'IPTC']],
+		];
+		foreach ($cases as $name => [$class, $bytes, $missing]) {
+			foreach ($missing as $carrier) {
+				$file = $class::fromString($bytes());
+				self::assertNull($file->{"get$carrier"}(), "$name get$carrier");
+				self::assertFalse($file->{"has$carrier"}(), "$name has$carrier");
+				$file->{"set$carrier"}(null);       // dropping what is not there is always fine
+
+				try {
+					$file->{"set$carrier"}($this->carrierValue($carrier));
+					self::fail("$name::set$carrier() must throw rather than drop the data");
+				} catch (TIOException) {
+				}
+				self::assertNull(
+					$class::fromString($file->toBinary())->{"get$carrier"}(),
+					"$name wrote $carrier despite refusing it",
+				);
+			}
+		}
+	}
+
+	/** A value of the kind the named carrier's setter takes. */
+	private function carrierValue(string $carrier): TEXIF|TIPTC|string
+	{
+		return match ($carrier) {
+			'EXIF' => $this->exif(),
+			'IPTC' => $this->iptc(),
+			'ICCProfile' => ICCProfileBuilder::sRgb(),
+		};
 	}
 
 	private function jpeg(): string
@@ -892,5 +939,77 @@ class TContainerReadWriteTest extends PHPUnit\Framework\TestCase
 		$irb->setIPTC($this->iptc('Present'));
 		$fresh->setPhotoshopIRB($irb);
 		self::assertSame('Present', $fresh->getPhotoshopIRB()?->getIPTC()[TIPTCTags::ObjectName]);
+	}
+
+	//
+	// ─── AVI ─────────────────────────────────────────────────────────────────
+	//
+
+	public function testAviCarriersRoundTrip()
+	{
+		$avi = TAVI::fromString(ContainerFixtures::avi());
+		self::assertNull($avi->getXMP());
+		self::assertFalse($avi->hasXMP());
+
+		$avi->setXMP($this->xmp());
+		$round = TAVI::fromString($avi->toBinary());
+		self::assertTrue($round->hasXMP());
+		self::assertSame('Container test', $round->getXMP()?->getLangAltValue(TXMP::NS_DC, 'title'));
+
+		$round->setXMP(null);
+		self::assertNull(TAVI::fromString($round->toBinary())->getXMP());
+	}
+
+	//
+	// ─── ISO BMFF ────────────────────────────────────────────────────────────
+	//
+
+	public function testBmffCarriersRoundTrip()
+	{
+		$profile = ICCProfileBuilder::sRgb();
+		$bmff = TBMFF::fromString(ContainerFixtures::heif());
+		self::assertNull($bmff->getEXIF());
+		self::assertNull($bmff->getICCProfile());
+
+		$bmff->setEXIF($this->exif());
+		$bmff->setXMP($this->xmp());
+		$bmff->setICCProfile($profile);
+
+		$round = TBMFF::fromString($bmff->toBinary());
+		self::assertSame('A. Photographer', $round->getEXIF()?->getValueByName('Artist'));
+		self::assertSame('Container test', $round->getXMP()?->getLangAltValue(TXMP::NS_DC, 'title'));
+		self::assertSame(bin2hex($profile), bin2hex((string) $round->getICCProfile()));
+		self::assertSame([true, true, true], [$round->hasEXIF(), $round->hasXMP(), $round->hasICCProfile()]);
+	}
+
+	public function testBmffCarriersAreRemovable()
+	{
+		$bmff = TBMFF::fromString(ContainerFixtures::heif());
+		$bmff->setEXIF($this->exif());
+		$bmff->setICCProfile(ICCProfileBuilder::sRgb());
+		$bmff = TBMFF::fromString($bmff->toBinary());
+
+		$bmff->setICCProfile(null);
+		$round = TBMFF::fromString($bmff->toBinary());
+		self::assertNull($round->getICCProfile());
+		self::assertSame('A. Photographer', $round->getEXIF()?->getValueByName('Artist'));
+	}
+
+	//
+	// ─── JPEG XL ─────────────────────────────────────────────────────────────
+	//
+
+	public function testJxlCarriersRoundTrip()
+	{
+		$jxl = TJXL::fromString(ContainerFixtures::jxl());
+		self::assertSame([64, 48], [$jxl->getWidth(), $jxl->getHeight()]);
+
+		$jxl->setEXIF($this->exif());
+		$jxl->setXMP($this->xmp());
+
+		$round = TJXL::fromString($jxl->toBinary());
+		self::assertSame('A. Photographer', $round->getEXIF()?->getValueByName('Artist'));
+		self::assertSame('Container test', $round->getXMP()?->getLangAltValue(TXMP::NS_DC, 'title'));
+		self::assertSame([64, 48], [$round->getWidth(), $round->getHeight()]);
 	}
 }

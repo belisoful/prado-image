@@ -49,7 +49,7 @@
   - `@author` for attribution
   - `@method` for dynamic events with prefix 'dy-'; which are called (on "$this->dy-") but not defined.
 - Inline comments should be in English and start with `//`
-- Do NOT add `@since` tags: the extension is at its initial release (v1.0.0), so every symbol is "since 1.0.0" and the tag carries no information.
+- Do NOT add `@since` tags: this extension does not track availability per symbol. Everything but the AVI, ISO BMFF and JPEG XL containers shipped in v1.0.0, and those arrived in v1.1.0, which the version note below records instead.
 - All documentation should be written in present perfect tense
 
 ### Error Handling
@@ -91,7 +91,7 @@
 - This is a new, pre-release extension with no published API to preserve, so backward compatibility is NOT a constraint; prefer the better design over a compatible one
 - A full check consists of the 4 checks (in order): `php -l` compile, php-cs-fixer, phpstan, phpunit (all checks must pass successfully)
 - A full check must be done for code to be ready for git commit.
-- The current version of this extension is **v1.0.0** (initial release). It targets PRADO 4.4+. Because it is the initial release, source docblocks carry no `@since` tags.
+- The current version of this extension is **v1.1.0**, which adds the AVI, ISO BMFF and JPEG XL containers to the v1.0.0 initial release. It targets PRADO 4.4+. Source docblocks carry no `@since` tags, and the version is the same in the sibling repository apart from a sub-fix component.
 - This extension namespaces its classes under `Prado\IO\Image\`, `Prado\IO\Image\TIFF\`, `Prado\IO\Image\ICC\`, `Prado\IO\Image\Meta\`, `Prado\IO\Image\Meta\Makernote\`, and `Prado\IO\Compression\` (PSR-4 `Prado\` → `src/`); extensions do NOT update the framework's `classes.php`. Prado3 short class names are supplied via `config/classMap.json`, registered by Composer from `composer.json` `extra.prado.class-map`.
 - The tag knowledge bases (`TEXIFTags`, `TMakernoteTags`, `TMakernoteTables`, `TPhotoshopResourceNames`) are fact tables from the public specs; keep them complete and factual when extending.
 - EXIF rewrites must keep the makernote pinned at its original offset (the `TTIFFTag::setPreserveOffset()` invariant). The pin predicate lives in **one** place — `TTIFFDocument::isPinned()` — which both `collectPins()` (the compose reservation) and `layoutIfd()` (the actual placement) call, so the reserved-space list can never drift from what the writer pins; do not re-inline that condition. `TEXIF`/`TTIFF` surface those ranges as `getReservedSpaces()` and bridge them to the framework's reserved-space stream decorators via `toReservedSpaceStream()`/`toFreeSpaceStream()` — the decorators own the write-through mechanics, so do not reimplement reserved-space stream logic here. TIFF files are read-write: keep the `TTIFFTag::setExternalData()` strip/tile capture-and-relocate mechanism (and its offsets/byte-counts pairing) intact on any writer change.
@@ -120,30 +120,29 @@
   100% can hide a branch no test drives. The gate in CI is the authority; when a line is
   reported uncovered there but covered locally, believe CI and write the test that actually
   exercises the branch. Do not chase it by weakening the gate.
-- Coverage is gated at two depths and both are expected to hold. **Lines: 99.92%** —
+- Coverage is gated at two depths and both are expected to hold. **Lines: 99.96%** —
   `tests/test_tools/coverage-gate.php`, run on every push. **Branches: 99.67%** —
-  `tests/test_tools/branch-gate.php`, run nightly by `.github/workflows/branch-coverage.yml`,
-  because a `--path-coverage` run takes far longer than the suite itself. Branch coverage is
+  `tests/test_tools/branch-gate.php`, run by the `branches` job of
+  `.github/workflows/prado-image.yml` on pull requests and main, because a `--path-coverage`
+  run takes far longer than the suite itself. Branch coverage is
   the stronger measure: it catches a decision that only ever goes one way, which a covered
   line hides. Every one of the 20 remaining untaken branches is unreachable by construction,
-  and the gate's per-file figures are **maximums with a total cap**, not exact counts: the
-  compiler emits these edges, so which site carries one moves between PHP versions — PHP 8.1
-  reports the dead multi-catch rethrow in `TTIFFDocument::scanIfd()` and PHP 8.3 the identical
-  one in `TEXIF::scanStream()`. A file under its maximum is reported, not failed.
   and most are not code anyone wrote — PHP emits an implicit `UnhandledMatchError` edge for a
   `match` behind a range guard, an implicit `return null` after a `while (true)` that only
   exits by return or throw, an implicit `default` for a `switch` over a validated private
   field, and an implicit rethrow for a multi-catch whose `try` can only raise the listed
   types. The rest are guards made redundant by an identical earlier check. Do not chase them.
-- Line coverage of `src` is **99.92%** and is expected to stay there: a change that adds
-  an uncovered line is a change that needs a test.  Exactly five lines are knowingly
+  The gate's per-file figures are **maximums with a total cap**, not exact counts: the
+  compiler emits these edges, so which site carries one moves between PHP versions — PHP 8.1
+  reports the dead multi-catch rethrow in `TTIFFDocument::scanIfd()` and PHP 8.3 the identical
+  one in `TEXIF::scanStream()`. A file under its maximum is reported, not failed.
+- Line coverage of `src` is **99.96%** and is expected to stay there: a change that adds
+  an uncovered line is a change that needs a test.  Exactly three lines are knowingly
   unreachable from a test, and each is unreachable for a stated reason — do not "cover"
   them with contrived tests, and do not silence them with `@codeCoverageIgnore`:
   - `TCCITTFaxCompressor::writeRun()` — the `$makeup < 64` break.  Every multiple of 64
     from 64 to 2560 has a code in `ExtendedCodes` or in both colour tables, so the
     make-up search always succeeds on its first iteration.
-  - `TJUMBFBox::toBinary()` — the 64-bit extended length.  Emitting it needs a single
-    in-memory payload larger than 4 GiB.
   - `TImageGraphicsGD::monoPixels()` — the allocation guard.  `imagecreatetruecolor()`
     is called with the *source's* dimensions, so it can only fail for a source of
     ~537 M pixels that must already exist to be passed in (measured: 33 s, 3.7 GB).
@@ -156,6 +155,14 @@
     runs but whose condition never flips.  PHPStan level 4 found one such dead guard
     (`TKonicaMinoltaMakernote`) that 100% line coverage would never have revealed.
 - NEVER add/change phpunit command options when unit testing; only run project unit tests as specified
+
+## Mirror repository — keep in sync
+
+This repo and **[php-image](https://github.com/belisoful/php-image)** (`../php-image`) are mirrors of one another: the same library, customized for the PRADO framework, the sibling being a general standalone PHP library. They must remain **synchronized in features and function at all times**, including source, tests, the coverage/branch gates, CI workflows, and the `agents/` notes. A task here is not complete until the same change is applied to the sibling.
+
+Differences are limited to the host adaptation — see the table in [CLAUDE.md](CLAUDE.md) for the full mapping (`TEXIF` here is `EXIF` there; `Prado\IO\Image\` maps to `Belisoful\Image\`; Prado exceptions with `config/errorMessages.txt` keys map to SPL exceptions with inline messages). Everything else — class order, method names and signatures, test names, documented invariants — must match file for file.
+
+Versions are identical between the repos except for the sub-fix component (`v0.0.0.x`, the trailing `x`), which may differ; the `major.minor.patch` prefix always matches.
 
 ## Development Environment
 - PHP 8.1 or higher required

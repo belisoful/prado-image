@@ -99,6 +99,9 @@ abstract class TImageFile extends TComponent implements IPrivacyScrubbable
 			TPNG::isPNG($bytes) => TPNG::class,
 			TGIF::isGIF($bytes) => TGIF::class,
 			TWebP::isWebP($bytes) => TWebP::class,
+			TAVI::isAVI($bytes) => TAVI::class,
+			TJXL::isJXL($bytes) => TJXL::class,
+			TBMFF::isBMFF($bytes) => TBMFF::class,
 			TTIFF::isTIFF($bytes) => TTIFF::class,
 			default => throw new TIOException('imagefile_format_unrecognized'),
 		};

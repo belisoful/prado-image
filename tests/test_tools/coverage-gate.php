@@ -23,7 +23,6 @@
  */
 const ALLOWED_UNCOVERED = [
 	'src/IO/Compression/TCCITTFaxCompressor.php' => 1,
-	'src/IO/Image/Meta/JUMBF/TJUMBFBox.php' => 2,
 	'src/IO/Image/TImageGraphicsGD.php' => 1,
 	'src/IO/Image/TImageGraphicsImagick.php' => 1,
 ];
