@@ -126,12 +126,21 @@
   `.github/workflows/prado-image.yml` on pull requests and main, because a `--path-coverage`
   run takes far longer than the suite itself. Branch coverage is
   the stronger measure: it catches a decision that only ever goes one way, which a covered
-  line hides. Every one of the 20 remaining untaken branches is unreachable by construction,
+  line hides. Every one of the 24 remaining untaken branches is unreachable by construction,
   and most are not code anyone wrote — PHP emits an implicit `UnhandledMatchError` edge for a
   `match` behind a range guard, an implicit `return null` after a `while (true)` that only
   exits by return or throw, an implicit `default` for a `switch` over a validated private
   field, and an implicit rethrow for a multi-catch whose `try` can only raise the listed
   types. The rest are guards made redundant by an identical earlier check. Do not chase them.
+  Four are worth naming, because they look testable and are not. `TBMFF::rewriteMovie()` and `TBMFF::resizeMeta()`
+  each recompute a box after running an edit, and the `null` arm of that recomputation cannot
+  be taken: no edit either of them runs removes the `moov` or `meta` box it just measured, but
+  the accessor returns a nullable box, so the arm has to be written. `TBMFF::removeColourInPlace()`
+  falls out of its loop without finding the property, which its one caller found in that same
+  list a moment earlier. `TJXLSizeHeader::readSmallDimension()` returns null when the bits run
+  out, which they cannot: the codestream buffer is always a whole number of bytes, so any
+  prefix short enough to starve that five-bit read fails at the one-bit `small` flag or the
+  three-bit ratio first.
   The gate's per-file figures are **maximums with a total cap**, not exact counts: the
   compiler emits these edges, so which site carries one moves between PHP versions — PHP 8.1
   reports the dead multi-catch rethrow in `TTIFFDocument::scanIfd()` and PHP 8.3 the identical
