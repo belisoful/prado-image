@@ -49,7 +49,7 @@
   - `@author` for attribution
   - `@method` for dynamic events with prefix 'dy-'; which are called (on "$this->dy-") but not defined.
 - Inline comments should be in English and start with `//`
-- Do NOT add `@since` tags: this extension does not track availability per symbol. Everything but the AVI, ISO BMFF and JPEG XL containers shipped in v1.0.0, and those arrived in v1.1.0, which the version note below records instead.
+- Do NOT add `@since` tags: this extension does not track availability per symbol. Everything but the AVI, ISO BMFF and JPEG XL containers shipped in v0.1.0, and those arrived in v0.2.0, which the version note below records instead.
 - All documentation should be written in present perfect tense
 
 ### Error Handling
@@ -91,7 +91,7 @@
 - This is a new, pre-release extension with no published API to preserve, so backward compatibility is NOT a constraint; prefer the better design over a compatible one
 - A full check consists of the 4 checks (in order): `php -l` compile, php-cs-fixer, phpstan, phpunit (all checks must pass successfully)
 - A full check must be done for code to be ready for git commit.
-- The current version of this extension is **v1.1.0**, which adds the AVI, ISO BMFF and JPEG XL containers to the v1.0.0 initial release. It targets PRADO 4.4+. Source docblocks carry no `@since` tags, and the version is the same in the sibling repository apart from a sub-fix component.
+- The current version of this extension is **v0.2.0**, which adds the AVI, ISO BMFF and JPEG XL containers to v0.1.0. It targets PRADO 4.4+. Source docblocks carry no `@since` tags, and the version is the same in the sibling repository apart from a sub-fix component. The `major.minor.patch` prefix tracks the git tag, which is what Composer and Packagist read; `composer.json` carries no `version` field.
 - This extension namespaces its classes under `Prado\IO\Image\`, `Prado\IO\Image\TIFF\`, `Prado\IO\Image\ICC\`, `Prado\IO\Image\Meta\`, `Prado\IO\Image\Meta\Makernote\`, and `Prado\IO\Compression\` (PSR-4 `Prado\` → `src/`); extensions do NOT update the framework's `classes.php`. Prado3 short class names are supplied via `config/classMap.json`, registered by Composer from `composer.json` `extra.prado.class-map`.
 - The tag knowledge bases (`TEXIFTags`, `TMakernoteTags`, `TMakernoteTables`, `TPhotoshopResourceNames`) are fact tables from the public specs; keep them complete and factual when extending.
 - EXIF rewrites must keep the makernote pinned at its original offset (the `TTIFFTag::setPreserveOffset()` invariant). The pin predicate lives in **one** place — `TTIFFDocument::isPinned()` — which both `collectPins()` (the compose reservation) and `layoutIfd()` (the actual placement) call, so the reserved-space list can never drift from what the writer pins; do not re-inline that condition. `TEXIF`/`TTIFF` surface those ranges as `getReservedSpaces()` and bridge them to the framework's reserved-space stream decorators via `toReservedSpaceStream()`/`toFreeSpaceStream()` — the decorators own the write-through mechanics, so do not reimplement reserved-space stream logic here. TIFF files are read-write: keep the `TTIFFTag::setExternalData()` strip/tile capture-and-relocate mechanism (and its offsets/byte-counts pairing) intact on any writer change.
