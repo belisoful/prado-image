@@ -87,6 +87,32 @@ class TEXIFInterpretTest extends PHPUnit\Framework\TestCase
 		self::assertStringContainsString('8, 8, 8', (string) TEXIFTags::textValue($bits, TEXIFTags::TIFF));
 	}
 
+	public function testFloatTextIsTheShortestDecimalThatReadsBack()
+	{
+		// Read back, a stored 0.1 is 0.10000000149011612: its widening to a double, not
+		// what the file holds, so it renders at the fewest digits that pack to the same bytes.
+		$stored = TTIFFDataType::unpack(TTIFFDataType::Float, TTIFFDataType::pack(TTIFFDataType::Float, [0.1, -2.2, 72.0], true), true);
+		self::assertNotSame(0.1, $stored[0]);
+		$read = new TTIFFTag(0xC000, TTIFFDataType::Float, $stored);
+		self::assertSame('0.1, -2.2, 72', TEXIFTags::textValue($read, TEXIFTags::TIFF));
+
+		// A value set but not yet written renders as it will be stored.
+		$set = new TTIFFTag(0xC000, TTIFFDataType::Float, [0.1]);
+		self::assertSame('0.1', TEXIFTags::textValue($set, TEXIFTags::TIFF));
+
+		// Every digit is kept that the value needs: eight for 2^24, nine at the most.
+		$wide = new TTIFFTag(0xC000, TTIFFDataType::Float, [16777216.0]);
+		self::assertSame('16777216', TEXIFTags::textValue($wide, TEXIFTags::TIFF));
+		$nine = new TTIFFTag(0xC000, TTIFFDataType::Float, TTIFFDataType::unpack(TTIFFDataType::Float, "\x42\xFE\xC7\x46", true));
+		self::assertSame('127.389206', TEXIFTags::textValue($nine, TEXIFTags::TIFF));
+		$nan = new TTIFFTag(0xC000, TTIFFDataType::Float, [NAN]);
+		self::assertSame('NaN', TEXIFTags::textValue($nan, TEXIFTags::TIFF));
+
+		// A Double is not narrowed to single precision.
+		$double = new TTIFFTag(0xC000, TTIFFDataType::Double, [0.1, 1234.5678]);
+		self::assertSame('0.1, 1234.5678', TEXIFTags::textValue($double, TEXIFTags::TIFF));
+	}
+
 	public function testLookupUnknownValueAndStringTrim()
 	{
 		$orientation = new TTIFFTag(274, TTIFFDataType::UShort, [99]);
