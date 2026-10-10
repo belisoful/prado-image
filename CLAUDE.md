@@ -75,8 +75,9 @@ php tests/test_tools/coverage-gate.php build/logs/clover.xml
 
 Branch coverage is gated separately and more deeply: `tests/test_tools/branch-gate.php` reads a
 `--path-coverage` report and requires every branch to be taken except the documented unreachable
-edges. It runs in the `branches` job of `.github/workflows/prado-image.yml` on pull requests
-and main, not on every push, because instrumenting every branch is far slower than the suite:
+edges. It runs in the `branches` job of `.github/workflows/prado-image.yml` beside the suite —
+on pull requests, pushes to main and on demand, since CI runs on no other push — and
+instrumenting every branch is far slower than the suite:
 
 ```sh
 XDEBUG_MODE=coverage php -d memory_limit=10G vendor/bin/phpunit --testsuite unit \
