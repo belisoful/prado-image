@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout extension
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           path: prado-image
 
@@ -100,7 +100,7 @@ jobs:
 
     steps:
       - name: Checkout extension
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           path: prado-image
 
