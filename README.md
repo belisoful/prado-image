@@ -110,7 +110,7 @@ $exif->getThumbnail();
 
 | Requirement | Scope | Purpose |
 |---|---|---|
-| PHP 8.1 or higher | required | The only hard requirement |
+| PHP 8.2 or higher | required | The only hard requirement — the PRADO framework's own floor |
 | PRADO Framework `^4.4` | dev | `TComponent`/`TMap`, the `TStream` IO layer (`TLimitStream`, `TResourceType`, the stream filters), and `Prado\IO\Compression\ICompressor` |
 | `ext-gd` | suggested | Thumbnail/caption conversion as `\GdImage` (the preferred `TImageGraphics` library); generates the unit-test fixtures |
 | `ext-imagick` | suggested | Thumbnail/caption conversion as `\Imagick` (the alternate `TImageGraphics` library) |
