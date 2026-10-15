@@ -176,7 +176,7 @@ Differences are limited to the host adaptation — see the table in [CLAUDE.md](
 Versions are identical between the repos except for the sub-fix component (`v0.0.0.x`, the trailing `x`), which may differ; the `major.minor.patch` prefix always matches.
 
 ## Development Environment
-- PHP 8.2 or higher required (the PRADO framework's own floor; php-image still supports 8.1)
+- PHP 8.2 or higher required
 - PHP extensions: ctype, dom, intl, json, pcre, spl (required); gd (required for the unit tests' generated fixtures; one of gd/imagick is required for raster conversion); imagick (optional alternate graphics library); iconv (IPTC charset conversion)
 - Composer for dependency management
 - Required developer dependencies for code checking: phpunit/phpunit, phpstan/phpstan, friendsofphp/php-cs-fixer

@@ -55,8 +55,9 @@ so.
 
 ### Changed
 
-- **PHP 8.2 is now the minimum** (prado-image only), because the PRADO framework this
-  extension builds on now requires it; CI no longer runs PHP 8.1. php-image still supports 8.1.
+- **PHP 8.2 is now the minimum** in both mirrors. The PRADO framework that prado-image builds on
+  requires it, and the two repositories share code file for file, so they share a language
+  floor too. PHP 8.1 is past end of life; CI no longer runs it.
 - Every write to these containers obeys a **never-move rule**, because they hold absolute file
   offsets (`idx1`, `indx`, `stco`/`co64`, `saio`, `iloc`) that naive insertion corrupts. A
   chunk is rewritten in its own slot when it fits, else the slot is vacated to padding,
