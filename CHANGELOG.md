@@ -18,7 +18,9 @@ so.
   in, its EXIF, GPS and Interoperability IFDs as deep copies. `null` leaves only the image tags.
 - **Trailing data** on JPEG and GIF: `getTrailingData()` and `removeTrailingData()`. On a JPEG
   that is everything after the first top-level EOI — MPF secondary images, motion-photo video,
-  any appended file — and removing it also drops the APP2 `MPF` index that addressed it.
+  any appended file — and removing it also drops the APP2 `MPF` index that addressed it. A
+  lazily read JPEG shortens its deferred scan window rather than loading it (php-image does this
+  through a new `SourceRange::withLength()`).
 - **TIFF `SampleFormat`** in `TTIFF::getImage()`: signed integer samples at 8, 16 and 32 bits;
   IEEE floating point at 16 (half), 24, 32 and 64 bits, scaled from `SMinSampleValue`–
   `SMaxSampleValue` or 0.0–1.0; unsigned at 32 bits; and the floating-point predictor.
