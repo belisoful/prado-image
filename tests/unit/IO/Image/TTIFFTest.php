@@ -4,6 +4,8 @@ use Prado\IO\Image\Meta\TEXIF;
 use Prado\IO\Image\Meta\TIPTC;
 use Prado\IO\Image\Meta\TIPTCTags;
 use Prado\IO\Image\TIFF\TTIFFDataType;
+use Prado\IO\Image\TIFF\TTIFFTag;
+use Prado\IO\Image\TImageGraphics;
 use Prado\IO\Image\TTIFF;
 
 class TTIFFTest extends PHPUnit\Framework\TestCase
@@ -19,6 +21,95 @@ class TTIFFTest extends PHPUnit\Framework\TestCase
 		$exif->setIPTC($iptc);
 		$exif->getIfd0()->setTagValues(TTIFF::ICCTag, TTIFFDataType::Undefined, 'ICCPROFILEBYTES!');
 		return $exif->getTiff()->toBinary();
+	}
+
+	private function gdTiff(): TTIFF
+	{
+		$image = imagecreatetruecolor(6, 4);
+		imagefilledrectangle($image, 0, 0, 5, 3, imagecolorallocate($image, 10, 120, 200));
+		return TTIFF::fromImage($image);
+	}
+
+	private function artistExif(): TEXIF
+	{
+		$exif = new TEXIF();
+		$exif->setSignature('');
+		$exif->setValueByName('Artist', 'Jane Doe');
+		$exif->setValueByName('FNumber', 2.8);
+		$exif->setLatitude(34.05);
+		$exif->setLongitude(-118.24);
+		// A raster tag in the given EXIF describes some other image and must not be taken.
+		$exif->getIfd0()->setTagValues(TTIFF::WidthTag, TTIFFDataType::ULong, [999]);
+		return $exif;
+	}
+
+	public function testSetExifMergesIntoTheTiffAndKeepsItsPixels()
+	{
+		$tiff = $this->gdTiff();
+		$pixels = bin2hex(TImageGraphics::rgbPixels($tiff->getImage()));
+		$tiff->setXmpText('<x:xmpmeta xmlns:x="adobe:ns:meta/"></x:xmpmeta>');
+		$tiff->setEXIF($this->artistExif());
+
+		$round = TTIFF::fromString($tiff->toBinary());
+		self::assertSame('Jane Doe', $round->getEXIF()->getValueByName('Artist'));
+		self::assertEqualsWithDelta(34.05, $round->getEXIF()->getLatitude(), 1e-6);
+		self::assertNotNull($round->getEXIF()->getValueByName('FNumber'));
+		self::assertSame([6, 4], [$round->getWidth(), $round->getHeight()]);
+		self::assertSame($pixels, bin2hex(TImageGraphics::rgbPixels($round->getImage())));
+		self::assertNotNull($round->getXmpText(), 'a carrier with its own setter stays');
+
+		$round->setEXIF(null);
+		$bare = TTIFF::fromString($round->toBinary());
+		self::assertNull($bare->getEXIF()->getValueByName('Artist'));
+		self::assertNull($bare->getEXIF()->getLatitude());
+		self::assertNull($bare->getEXIF()->getExifIfd());
+		self::assertSame([6, 4], [$bare->getWidth(), $bare->getHeight()]);
+		self::assertSame($pixels, bin2hex(TImageGraphics::rgbPixels($bare->getImage())));
+		self::assertNotNull($bare->getXmpText());
+	}
+
+	public function testSetExifCopiesSoTheTwoStayApart()
+	{
+		$exif = $this->artistExif();
+		$tiff = $this->gdTiff();
+		$tiff->setEXIF($exif);
+		$exif->setValueByName('Artist', 'Someone Else');
+		$exif->getGpsIfd()->removeTag(2);
+		self::assertSame('Jane Doe', $tiff->getEXIF()->getValueByName('Artist'));
+		self::assertEqualsWithDelta(34.05, $tiff->getEXIF()->getLatitude(), 1e-6);
+
+		// The live document was edited in place, so setting it back is a no-op.
+		$tiff->setEXIF($tiff->getEXIF());
+		self::assertSame('Jane Doe', $tiff->getEXIF()->getValueByName('Artist'));
+	}
+
+	public function testSetExifKeepsAPinnedValueAtItsOffset()
+	{
+		$exif = new TEXIF();
+		$exif->setSignature('');
+		$note = new TTIFFTag(37500, TTIFFDataType::Undefined, str_repeat('N', 32));
+		$note->setOffset(400);
+		$note->setPreserveOffset(true);
+		$exif->getExifIfd(true)->setTag($note);
+
+		$tiff = $this->gdTiff();
+		$tiff->setEXIF($exif);
+		$copy = $tiff->getEXIF()->getExifIfd()->getTag(37500);
+		self::assertNotSame($note, $copy);
+		self::assertSame(400, $copy->getOffset());
+		self::assertTrue($copy->getPreserveOffset());
+		self::assertSame(str_repeat('N', 32), substr($tiff->toBinary(), 400, 32));
+	}
+
+	public function testSetExifOnAnEmptyTiff()
+	{
+		$tiff = new TTIFF();
+		$tiff->setEXIF(null);
+		self::assertNull($tiff->getEXIF(), 'clearing nothing does not conjure a document');
+
+		$tiff->setEXIF($this->artistExif());
+		self::assertSame('Jane Doe', $tiff->getEXIF()->getValueByName('Artist'));
+		self::assertNull($tiff->getEXIF()->getIfd0()->getTag(TTIFF::WidthTag), 'no raster tag is taken');
 	}
 
 	public function testTiffFileRead()

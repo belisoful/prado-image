@@ -105,16 +105,12 @@ class TImageFileFacadeTest extends PHPUnit\Framework\TestCase
 		self::assertFalse($gif->hasEXIF());
 		$gif->setEXIF(null);
 
-		// A format with no writable EXIF carrier throws on a non-null value rather than dropping
-		// it — GIF (no EXIF at all) and TIFF (EXIF is the document, not replaceable wholesale).
-		$tiff = TImageFile::fromString(TTIFF::fromImage($this->gd())->toBinary());
-		foreach ([$gif, $tiff] as $image) {
-			try {
-				$image->setEXIF(new TEXIF());
-				self::fail('setEXIF should throw for ' . $image->getFormat());
-			} catch (TIOException $e) {
-				self::assertTrue(true);
-			}
+		// A format with no writable EXIF carrier throws on a non-null value rather than dropping it.
+		try {
+			$gif->setEXIF(new TEXIF());
+			self::fail('setEXIF should throw for GIF');
+		} catch (TIOException $e) {
+			self::assertSame('GIF', $gif->getFormat());
 		}
 	}
 
