@@ -18,7 +18,9 @@ use Prado\IO\Compression\TPackBitsCompressor;
 use Prado\IO\Image\Meta\TEXIF;
 use Prado\IO\Image\TIFF\TTIFFDataType;
 use Prado\IO\Image\TIFF\TTIFFDocument;
+use Prado\IO\Image\TIFF\TTIFFIfd;
 use Prado\IO\Image\TIFF\TTIFFRaster;
+use Prado\IO\Image\TIFF\TTIFFTag;
 use Prado\IO\Stream\TFreeSpaceStream;
 use Prado\IO\Stream\TReservedSpaceMode;
 use Prado\IO\Stream\TReservedSpaceStream;
@@ -71,6 +73,19 @@ class TTIFF extends TImageFile
 	/** PackBits (TIFF Compression 32773). */
 	public const CompressionPackBits = 32773;
 
+	/**
+	 * The IFD0 tags a TIFF keeps when its EXIF is replaced: the raster and its layout
+	 * (dimensions, sampling, compression, photometrics, strips, tiles, colour tables,
+	 * YCbCr and JPEG fields, sub-images) and the carriers written through their own
+	 * setters — XMP (700), IPTC (33723), the Photoshop IRB (34377), and the ICC profile
+	 * (34675).  Every other IFD0 tag is the TIFF's EXIF metadata.
+	 */
+	public const ImageTags = [
+		254, 255, 256, 257, 258, 259, 262, 263, 264, 265, 266, 273, 277, 278, 279, 280,
+		281, 284, 290, 291, 317, 318, 319, 320, 321, 322, 323, 324, 325, 330, 338, 339,
+		340, 341, 513, 514, 529, 530, 531, 532, 700, 33723, 34377, 34675,
+	];
+
 	/** @var ?TEXIF The parsed metadata. */
 	private ?TEXIF $_exif = null;
 
@@ -101,6 +116,67 @@ class TTIFF extends TImageFile
 	public function getEXIF(): ?TEXIF
 	{
 		return $this->_exif;
+	}
+
+	/**
+	 * Replaces the EXIF metadata of the TIFF.  A TIFF has no separate EXIF carrier — its
+	 * IFD0 *is* the EXIF IFD0 — so the given metadata is merged into the image: every IFD0
+	 * tag that is not one of the {@see ImageTags} is removed, then the given EXIF's own
+	 * IFD0 metadata tags are copied in, the EXIF, GPS, and Interoperability sub-IFDs as
+	 * deep copies so later edits to either side stay apart.  The raster, the carriers
+	 * with their own setters, and the TIFF's other pages are untouched; the given EXIF's
+	 * IFD1 thumbnail is not copied, since a TIFF's IFD1 is its next page.  A copied value
+	 * pinned at its offset (a maker note) keeps its pin, so internal absolute pointers
+	 * that address it from the TIFF header stay valid.
+	 *
+	 * Passing the live document ({@see getEXIF()}) changes nothing, since it was edited in
+	 * place; passing null leaves only the image tags.
+	 * @param ?TEXIF $exif The EXIF metadata, or null to remove it.
+	 */
+	public function setEXIF(?TEXIF $exif): void
+	{
+		if ($exif === $this->_exif) {
+			return;
+		}
+		if ($this->_exif === null) {
+			$this->_exif = new TEXIF();
+			$this->_exif->setSignature('');
+		}
+		$ifd0 = $this->_exif->getIfd0();
+		foreach (array_keys($ifd0->getTags()) as $id) {
+			if (!in_array($id, self::ImageTags, true)) {
+				$ifd0->removeTag($id);
+			}
+		}
+		if ($exif === null) {
+			return;
+		}
+		foreach ($exif->getIfd0()->getTags() as $id => $tag) {
+			if (!in_array($id, self::ImageTags, true)) {
+				$ifd0->setTag(self::copyTag($tag));
+			}
+		}
+	}
+
+	/**
+	 * Copies a tag and, recursively, its sub-IFD, so the copy is laid out on its own and
+	 * an edit to it leaves the original unchanged.
+	 * @param TTIFFTag $tag The tag.
+	 * @return TTIFFTag The copy.
+	 */
+	protected static function copyTag(TTIFFTag $tag): TTIFFTag
+	{
+		$copy = new TTIFFTag($tag->getId(), $tag->getType(), $tag->getValues());
+		$copy->setOffset($tag->getOffset());
+		$copy->setPreserveOffset($tag->getPreserveOffset());
+		if ($sub = $tag->getSubIfd()) {
+			$ifd = new TTIFFIfd();
+			foreach ($sub->getTags() as $subTag) {
+				$ifd->setTag(self::copyTag($subTag));
+			}
+			$copy->setSubIfd($ifd);
+		}
+		return $copy;
 	}
 
 	/**
@@ -386,19 +462,6 @@ class TTIFF extends TImageFile
 	{
 		$bytes = $this->toBinary();
 		return new TFreeSpaceStream(TStream::fromString($bytes), $this->getReservedSpaces());
-	}
-
-	/**
-	 * Extends {@see clearPrivateData()} to the EXIF document itself.  A TIFF file *is* its
-	 * EXIF structure — there is no separate `setEXIF()` for the shared fan-out to write
-	 * back through — so the live document is scrubbed in place here; the XMP, IRB, and
-	 * IPTC it carries are reached by the shared carriers.
-	 * @param int $types The {@see TPrivacyCategory} flags to remove.
-	 * @return int The number of tags and directories removed.
-	 */
-	protected function clearFormatPrivateData(int $types): int
-	{
-		return $this->getEXIF()?->clearPrivateData($types) ?? 0;
 	}
 
 	protected function compose(): string

@@ -177,6 +177,9 @@ class TJPEG extends TImageFile
 	 */
 	protected const XMP_EXTENSION_CHUNK_SIZE = 65458;
 
+	/** @var string The APP2 Multi-Picture Format (CIPA DC-007) index identifier. */
+	public const MPF_IDENTIFIER = "MPF\x00";
+
 	/** @var string The APP11 box-format identifier code (JPEG Systems). */
 	public const JUMBF_IDENTIFIER = 'JP';
 
@@ -615,6 +618,90 @@ class TJPEG extends TImageFile
 	}
 
 	/**
+	 * Returns the bytes after the end of the image: everything past the first top-level
+	 * EOI marker, where a decoder of this image does not look.  That is where a
+	 * Multi-Picture Format (MPF) file keeps its secondary images — each a whole JPEG with
+	 * its own EXIF, GPS included — where a motion photo keeps its video, and where any
+	 * appended file lands.  A scan with no EOI has none.
+	 * @return string The trailing bytes, or '' when there are none.
+	 */
+	public function getTrailingData(): string
+	{
+		$scan = $this->getScanDirect();
+		return substr($scan, $this->endOfImage($scan));
+	}
+
+	/**
+	 * Removes the bytes after the end of the image ({@see getTrailingData()}) and the APP2
+	 * MPF index segment that addresses the secondary images among them, which would
+	 * otherwise point past the end of the file.  A deferred scan is shortened without
+	 * being loaded into the object, though it is read once to find its end.
+	 * {@see clearPrivateData()} does this for every category, since what the trailing
+	 * bytes carry is a whole second set of metadata that no carrier reaches.
+	 * @return bool Whether anything was removed.
+	 */
+	public function removeTrailingData(): bool
+	{
+		$segments = $this->getSegmentsDirect();
+		$kept = array_values(array_filter(
+			$segments,
+			fn (array $segment): bool => !($segment['marker'] === self::APP2 && $segment['kind'] === 'raw'
+				&& str_starts_with($segment['payload'], self::MPF_IDENTIFIER)),
+		));
+		$this->setSegmentsDirect($kept);
+		$scan = $this->getScanDirect();
+		$end = $this->endOfImage($scan);
+		if ($end < strlen($scan)) {
+			if ($this->_scanSource !== null) {
+				$this->_scanLength = $end;
+			} else {
+				$this->setScanDirect(substr($scan, 0, $end));
+			}
+			return true;
+		}
+		return count($kept) < count($segments);
+	}
+
+	/**
+	 * Finds the end of the image within the scan: the offset just past the first top-level
+	 * EOI, crossing the entropy-coded data after each SOS and the tables, restart and fill
+	 * bytes between progressive scans.
+	 * @param string $scan The scan, beginning with the SOS (or EOI) marker.
+	 * @return int The offset past the EOI, or the scan length when it has none.
+	 */
+	protected function endOfImage(string $scan): int
+	{
+		$len = strlen($scan);
+		$i = 0;
+		while ($i + 1 < $len) {
+			if (ord($scan[$i]) !== self::MARKER_PREFIX) {
+				$i++;
+				continue;
+			}
+			$marker = ord($scan[$i + 1]);
+			if ($marker === self::EOI) {
+				return $i + 2;
+			}
+			if ($marker === self::MARKER_PREFIX) {
+				$i++;   // a fill byte before a marker
+				continue;
+			}
+			if (!self::markerHasLength($marker)) {
+				$i += 2;
+				continue;
+			}
+			if ($i + 3 >= $len) {
+				break;
+			}
+			$i += 2 + ((ord($scan[$i + 2]) << 8) | ord($scan[$i + 3]));
+			if ($marker === self::SOS) {
+				$i = $this->skipEntropyData($scan, $i);
+			}
+		}
+		return $len;
+	}
+
+	/**
 	 * Returns the first JPEG comment (COM segment).
 	 * @return ?string The comment, or null when absent.
 	 */
@@ -660,6 +747,9 @@ class TJPEG extends TImageFile
 	 * legacy APP12 Picture Info block, whose `Camera=`, `Serial=`, and `TimeDate=` lines
 	 * make the whole block identifying ({@see TPrivacyCategory::CameraModel},
 	 * {@see TPrivacyCategory::SerialNumber}, or {@see TPrivacyCategory::Timestamp}).
+	 * Any category also drops the data after the end of the image and its MPF index
+	 * ({@see removeTrailingData()}): the secondary images there carry their own EXIF,
+	 * GPS included, which no flag-by-flag scrub of this file's carriers can reach.
 	 * @param int $types The {@see TPrivacyCategory} flags to remove.
 	 * @return int The number of fields removed.
 	 */
@@ -685,6 +775,9 @@ class TJPEG extends TImageFile
 		if (($types & (TPrivacyCategory::CameraModel | TPrivacyCategory::SerialNumber | TPrivacyCategory::Timestamp))
 			&& $this->getPictureInfo() !== null) {
 			$this->setPictureInfo(null);
+			$removed++;
+		}
+		if ($types !== 0 && $this->removeTrailingData()) {
 			$removed++;
 		}
 		return $removed;
