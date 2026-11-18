@@ -51,6 +51,18 @@ class TJPEGStreamingTest extends PHPUnit\Framework\TestCase
 		self::assertSame(bin2hex((string) TJPEG::fromString($bytes)->toBinary()), bin2hex($out), 'streamed == whole-parse compose');
 	}
 
+	public function testAStreamedJpegDropsItsTrailingDataWithoutLoadingTheScan()
+	{
+		$bytes = $this->jpegBytes();
+		$lazy = TJPEG::fromStreamLazy(TStream::fromString($bytes . $bytes));
+		self::assertSame($bytes, $lazy->getTrailingData());
+		self::assertTrue($lazy->removeTrailingData());
+		$target = TStream::fromMemory();
+		$lazy->streamTo($target);
+		$target->rewind();
+		self::assertSame(bin2hex((string) TJPEG::fromString($bytes)->toBinary()), bin2hex($target->getContents()));
+	}
+
 	public function testAStreamedJpegComposesByMaterializingItsDeferredScan()
 	{
 		$bytes = $this->jpegBytes();

@@ -120,6 +120,12 @@ class TXMP extends TComponent implements IPrivacyScrubbable
 	/** The Google photo-sphere (panorama) namespace. */
 	public const NS_GPANO = 'http://ns.google.com/photos/1.0/panorama/';
 
+	/** The Metadata Working Group image-regions namespace (named face regions). */
+	public const NS_MWG_RS = 'http://www.metadataworkinggroup.com/schemas/regions/';
+
+	/** The Microsoft Photo 1.2 namespace (People Tagging regions). */
+	public const NS_MP = 'http://ns.microsoft.com/photo/1.2/';
+
 	/** The Job (stJob) structure namespace. */
 	public const NS_STJOB = 'http://ns.adobe.com/xap/1.0/sType/Job#';
 
@@ -162,6 +168,8 @@ class TXMP extends TComponent implements IPrivacyScrubbable
 		self::NS_IPTC_EXT => 'Iptc4xmpExt',
 		self::NS_PLUS => 'plus',
 		self::NS_GPANO => 'GPano',
+		self::NS_MWG_RS => 'mwg-rs',
+		self::NS_MP => 'MP',
 		self::NS_STJOB => 'stJob',
 		self::NS_STEVT => 'stEvt',
 		self::NS_STREF => 'stRef',
@@ -868,6 +876,9 @@ class TXMP extends TComponent implements IPrivacyScrubbable
 			[self::NS_IPTC_EXT, 'PersonInImage'], [self::NS_IPTC_EXT, 'PersonInImageWDetails'],
 			[self::NS_PLUS, 'ImageCreator'], [self::NS_PLUS, 'ImageSupplier'], [self::NS_PLUS, 'CopyrightOwner'],
 			[self::NS_PLUS, 'Licensor'], [self::NS_PLUS, 'ImageSupplierImageID'],
+			// Face regions name the people in the picture: the MWG regions (mwg-rs:Name)
+			// and Microsoft's People Tagging (MPRI:PersonDisplayName) beneath MP:RegionInfo.
+			[self::NS_MWG_RS, 'Regions'], [self::NS_MP, 'RegionInfo'],
 		],
 		TPrivacyCategory::Description => [
 			[self::NS_DC, 'title'], [self::NS_DC, 'description'], [self::NS_DC, 'subject'],
