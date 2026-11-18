@@ -467,10 +467,13 @@ class TGIFFrame extends TComponent
 	/**
 	 * Decodes the pixel indexes: one palette-index byte per pixel, row-major, with the
 	 * four-pass interlace undone when the frame is interlaced.
+	 * @throws \Prado\Exceptions\TIOException When the frame's dimensions exceed the
+	 *   {@see TImageGraphics::getMaxPixels() pixel ceiling}.
 	 * @return string The pixel indexes.
 	 */
 	public function getPixels(): string
 	{
+		TImageGraphics::assertPixelCount($this->_width, $this->_height);   // short data is padded to them
 		$pixels = TGIFLZWCompressor::decompress($this->getLzwData(), $this->_minCodeSize);
 		$expected = $this->_width * $this->_height;
 		if (strlen($pixels) > $expected) {

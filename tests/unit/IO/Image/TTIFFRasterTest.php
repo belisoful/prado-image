@@ -1,6 +1,8 @@
 <?php
 
 use Prado\IO\Image\TImageGraphics;
+use Prado\Exceptions\TIOException;
+use Prado\IO\Image\TIFF\TTIFFDataType;
 use Prado\IO\Image\TTIFF;
 
 class TTIFFRasterTest extends PHPUnit\Framework\TestCase
@@ -87,5 +89,39 @@ class TTIFFRasterTest extends PHPUnit\Framework\TestCase
 		$exif->getIfd0()->setTagValues(TTIFF::HeightTag, Prado\IO\Image\TIFF\TTIFFDataType::ULong, [10]);
 		$tiff = TTIFF::fromString($exif->getTiff()->toBinary());
 		self::assertFalse($tiff->getImage());
+	}
+
+	public function testDecodingARasterOverThePixelCeilingIsRefused()
+	{
+		// The file is a few hundred bytes and claims 50000 by 50000.  The decoder sizes
+		// its buffers from those tags, so the claim is refused before anything is allocated.
+		$image = imagecreatetruecolor(4, 4);
+		$tiff = TTIFF::fromString(TTIFF::fromImage($image, TTIFF::CompressionNone)->toBinary());
+		$ifd = $tiff->getEXIF()->getIfd0();
+		$ifd->setTagValues(256, TTIFFDataType::ULong, [50000]);
+		$ifd->setTagValues(257, TTIFFDataType::ULong, [50000]);
+		$claimed = TTIFF::fromString($tiff->toBinary());
+		self::assertSame(50000, $claimed->getWidth());
+		try {
+			$claimed->getImage();
+			self::fail('a raster over the ceiling must be refused');
+		} catch (TIOException $e) {
+			self::assertSame('imagegraphics_raster_too_large', $e->getErrorCode());
+		}
+
+		// The ceiling is the caller's to move: an honest raster decodes at or under it.
+		$honest = TTIFF::fromImage($image, TTIFF::CompressionNone);
+		try {
+			TImageGraphics::setMaxPixels(15);
+			try {
+				$honest->getImage();
+				self::fail('a 4x4 raster is over a ceiling of 15 pixels');
+			} catch (TIOException) {
+			}
+			TImageGraphics::setMaxPixels(16);
+			self::assertNotFalse($honest->getImage());
+		} finally {
+			TImageGraphics::setMaxPixels(null);
+		}
 	}
 }

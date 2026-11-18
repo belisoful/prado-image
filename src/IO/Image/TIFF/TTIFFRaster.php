@@ -14,6 +14,7 @@ use Prado\IO\Compression\TCCITTFaxCompressor;
 use Prado\IO\Compression\THorizontalPredictor;
 use Prado\IO\Compression\TLZWCompressor;
 use Prado\IO\Compression\TPackBitsCompressor;
+use Prado\IO\Image\TImageGraphics;
 
 /**
  * TTIFFRaster class.
@@ -101,6 +102,8 @@ class TTIFFRaster
 	 * @param int $height The image height in pixels.
 	 * @param bool $bigEndian Whether the document is big-endian (MM), the order its
 	 *   multi-byte samples are stored in.
+	 * @throws \Prado\Exceptions\TIOException When the declared dimensions exceed the
+	 *   {@see TImageGraphics::getMaxPixels() pixel ceiling}.
 	 * @return ?string The RGB pixel bytes, or null when the raster form is unsupported.
 	 */
 	public static function toRgb(TTIFFIfd $ifd, int $width, int $height, bool $bigEndian): ?string
@@ -108,6 +111,7 @@ class TTIFFRaster
 		if ($width < 1 || $height < 1) {
 			return null;
 		}
+		TImageGraphics::assertPixelCount($width, $height);   // before any buffer is sized from them
 		$geometry = static::readGeometry($ifd, $width, $height, $bigEndian);
 		if ($geometry === null) {
 			return null;

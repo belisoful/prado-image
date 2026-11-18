@@ -556,17 +556,29 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 		if ($metaType === self::TYPE_UINT8) {
 			return ord($value);
 		}
+		// A numeric dataset shorter than its type reads as the big-endian number its bytes
+		// spell, so a truncated one is a small value rather than an out-of-range offset.
 		if ($metaType === self::TYPE_UINT16) {
+			$value = str_pad($value, 2, "\0", STR_PAD_LEFT);
 			return (ord($value[0]) << 8) | ord($value[1]);
 		}
 		if ($metaType === self::TYPE_UINT32) {
+			$value = str_pad($value, 4, "\0", STR_PAD_LEFT);
 			return (ord($value[0]) << 24) | (ord($value[1]) << 16) | (ord($value[2]) << 8) | ord($value[3]);
 		}
 		if ($record === 1 && $tagid === 90) { // CodedCharacterSet
-			return $charset = (string) TEscCharsetConverter::decodeEscapeCharset($value);
+			$name = TEscCharsetConverter::decodeEscapeCharset($value);
+			if ($name === null) {
+				// A designation this library cannot name is kept verbatim, so a rewrite does
+				// not lose it, and the text that follows stays in the fallback charset.
+				return $value;
+			}
+			return $charset = $name;
 		}
 		if ($record > 1 && $metaType === self::TYPE_STRING) {
-			return TUtf8Converter::toUTF8($value, $charset);
+			// Silenced: iconv raises a notice on bytes the charset does not hold, and the
+			// converter already answers with the text unconverted when that happens.
+			return static::hasIconv() ? @TUtf8Converter::toUTF8($value, $charset) : $value;
 		}
 		return $value;
 	}
@@ -623,8 +635,11 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 			$singleValue = (self::TAG_MAP[$id][self::PROPERTY_KEY] & self::PROP_REPEATABLE) === 0;
 			foreach (is_array($values) ? $values : [$values] as $value) {
 				if ($id === TIPTCTags::CodedCharacterSet) {
-					$charset = $value;
-					$value = TEscCharsetConverter::encodeEscapeCharset($value);
+					$escape = TEscCharsetConverter::encodeEscapeCharset((string) $value);
+					if ($escape !== null) {
+						$charset = $value;
+						$value = $escape;
+					}   // else an unrecognized designation: written back as it was read
 				}
 				$result .= self::tagBinary($id, $value, $charset);
 				if ($singleValue) {
@@ -633,6 +648,17 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 			}
 		}
 		return $photoshopEncode ? TPhotoshop8BIM::iptcEncode($result) : $result;
+	}
+
+	/**
+	 * Indicates whether ext-iconv, which is suggested rather than required, is loaded.
+	 * The framework's converter calls it unguarded, so without it text passes through
+	 * unconverted, which is also what a failed conversion leaves.
+	 * @return bool Whether charset conversion is available.
+	 */
+	protected static function hasIconv(): bool
+	{
+		return function_exists('iconv');
 	}
 
 	/**
@@ -656,7 +682,7 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 		} elseif ($metaType === self::TYPE_UINT8) {
 			$value = pack('C', $value);
 		} elseif ($record !== '1') {
-			$value = TUtf8Converter::fromUTF8((string) $value, $charset);
+			$value = static::hasIconv() ? @TUtf8Converter::fromUTF8((string) $value, $charset) : (string) $value;
 		}
 		$len = strlen((string) $value);
 		if ($len < 0x8000) {

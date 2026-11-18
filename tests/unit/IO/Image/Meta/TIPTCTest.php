@@ -1048,6 +1048,99 @@ class TIPTCTest extends PHPUnit\Framework\TestCase
 		$plain = [$stream, strlen($block), null];
 		self::assertFalse($noOffset->read($plain));
 	}
+
+	public function testAnUnrecognizedCharsetDesignationSurvivesARewrite()
+	{
+		// 1:90 names the charset as an ISO 2022 escape sequence.  One this library has no
+		// name for is kept as it was read, so the file can still be written, and the text
+		// after it stays in the fallback charset; an empty one is the same case.
+		$dataset = fn (int $record, int $id, string $value): string => "\x1C" . chr($record) . chr($id) . pack('n', strlen($value)) . $value;
+		foreach (["\x1B%5", ''] as $escape) {
+			$block = $dataset(1, 90, $escape) . $dataset(2, 120, 'Caption');
+			$iptc = TIPTC::parse($block, 'ASCII');
+			self::assertInstanceOf(TIPTC::class, $iptc);
+			self::assertSame($escape, $iptc[TIPTCTags::CodedCharacterSet]);
+			self::assertSame('Caption', $iptc[TIPTCTags::CaptionAbstract]);
+
+			$written = $iptc->toBinary('ASCII', false);
+			self::assertStringContainsString($dataset(1, 90, $escape), $written);
+			self::assertStringContainsString($dataset(2, 120, 'Caption'), $written);
+			$round = TIPTC::parse($written, 'ASCII');
+			self::assertSame($escape, $round[TIPTCTags::CodedCharacterSet]);
+		}
+
+		// A designation it does know still reads as the charset's name.
+		$block = $dataset(1, 90, "\x1B%G") . $dataset(2, 120, 'Caption');
+		self::assertSame('UTF-8', TIPTC::parse($block)[TIPTCTags::CodedCharacterSet]);
+	}
+
+	public function testANumericDatasetShorterThanItsTypeReadsAsASmallNumber()
+	{
+		// The record version is a two-byte number; one byte, or none, is the number those
+		// bytes spell rather than a read past the end of the value.
+		set_error_handler(static function (int $no, string $message): never {
+			throw new \ErrorException($message, 0, $no);
+		});
+		try {
+			$one = "\x1C\x02\x00\x00\x01\x04";
+			self::assertSame(4, TIPTC::parse($one)[TIPTCTags::ApplicationRecordVersion]);
+			$none = "\x1C\x02\x00\x00\x00";
+			self::assertSame(0, TIPTC::parse($none)[TIPTCTags::ApplicationRecordVersion]);
+			$whole = "\x1C\x02\x00\x00\x02\x01\x02";
+			self::assertSame(258, TIPTC::parse($whole)[TIPTCTags::ApplicationRecordVersion]);
+		} finally {
+			restore_error_handler();
+		}
+	}
+
+	public function testWithoutIconvTextPassesThroughUnconverted()
+	{
+		// ext-iconv is only suggested.  Without it nothing can be converted, so text is
+		// read and written as the bytes it is, which is what a failed conversion leaves.
+		// The block names ISO 8859-1 and holds UTF-8, so a conversion shows as mojibake.
+		$text = 'Café';
+		$block = "\x1C\x01\x5A\x00\x03\x1B\x2E\x41" . "\x1C\x02\x78" . pack('n', strlen($text)) . $text;
+
+		$converted = new TIPTC();
+		self::assertTrue($converted->read($block));
+		self::assertSame('ISO-8859-1', $converted[TIPTCTags::CodedCharacterSet]);
+		self::assertSame('CafÃ©', $converted[TIPTCTags::CaptionAbstract]);
+
+		$bare = new TIPTCWithoutIconv();
+		self::assertTrue($bare->read($block));
+		self::assertSame($text, $bare[TIPTCTags::CaptionAbstract]);
+
+		// Writing: the stock class encodes the caption into the named charset, the bare
+		// one writes the UTF-8 it was given.
+		foreach ([[new TIPTC(), "Caf\xE9"], [new TIPTCWithoutIconv(), $text]] as [$iptc, $bytes]) {
+			$iptc[TIPTCTags::CodedCharacterSet] = 'ISO-8859-1';
+			$iptc[TIPTCTags::CaptionAbstract] = $text;
+			self::assertStringContainsString("\x1C\x02\x78" . pack('n', strlen($bytes)) . $bytes, $iptc->toBinary(false), get_class($iptc));
+		}
+	}
+
+	public function testTextThatIsNotInItsDeclaredCharsetRaisesNothing()
+	{
+		// The block names UTF-8 and holds bytes that are not UTF-8; writing asks ASCII for a
+		// character it does not have.  Neither conversion can succeed, and neither may
+		// raise: the text is left unconverted, as the converter documents.
+		set_error_handler(static function (int $no, string $message): bool {
+			if (!(error_reporting() & $no)) {
+				return true;   // silenced at the call site
+			}
+			throw new \ErrorException($message, 0, $no);
+		});
+		try {
+			$block = "\x1C\x01\x5A\x00\x03\x1B\x25\x47" . "\x1C\x02\x78\x00\x03" . "a\xFFb";
+			self::assertInstanceOf(TIPTC::class, TIPTC::parse($block));
+
+			$iptc = new TIPTC();
+			$iptc[TIPTCTags::CaptionAbstract] = 'Café';
+			self::assertStringContainsString('Caf', $iptc->toBinary('ASCII', false));
+		} finally {
+			restore_error_handler();
+		}
+	}
 }
 
 /**
@@ -1138,5 +1231,17 @@ class TIPTCNonSeekableStream implements Psr\Http\Message\StreamInterface
 	public function getMetadata(?string $key = null)
 	{
 		return $key === null ? [] : null;
+	}
+}
+
+/**
+ * The record set on an installation without ext-iconv: the extension check is the seam
+ * the charset conversion routes through, so overriding it stands in for its absence.
+ */
+class TIPTCWithoutIconv extends TIPTC
+{
+	protected static function hasIconv(): bool
+	{
+		return false;
 	}
 }

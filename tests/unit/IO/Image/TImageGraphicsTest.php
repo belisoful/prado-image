@@ -3,6 +3,7 @@
 use Prado\Exceptions\TConfigurationException;
 use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\Exceptions\TInvalidDataValueException;
+use Prado\Exceptions\TIOException;
 use Prado\IO\Image\IImageGraphicsLibrary;
 use Prado\IO\Image\TImageGraphics;
 use Prado\IO\Image\TImageGraphicsGD;
@@ -18,6 +19,40 @@ class TImageGraphicsTest extends PHPUnit\Framework\TestCase
 	protected function tearDown(): void
 	{
 		TImageGraphics::setDefaultMode(null);
+		TImageGraphics::setMaxPixels(null);
+	}
+
+	public function testPixelCeiling()
+	{
+		// The ceiling bounds what a raster may declare before a decoder sizes a buffer from it.
+		self::assertSame(1 << 28, TImageGraphics::DefaultMaxPixels);
+		self::assertSame(TImageGraphics::DefaultMaxPixels, TImageGraphics::getMaxPixels());
+		TImageGraphics::assertPixelCount(16384, 16384);   // exactly at the ceiling
+		try {
+			TImageGraphics::assertPixelCount(16385, 16384);
+			self::fail('a raster over the ceiling must be refused');
+		} catch (TIOException $e) {
+			self::assertSame('imagegraphics_raster_too_large', $e->getErrorCode());
+		}
+		// A product past the integer range is still simply too many.
+		$this->expectPixelRefusal(PHP_INT_MAX, PHP_INT_MAX);
+
+		TImageGraphics::setMaxPixels(24);
+		self::assertSame(24, TImageGraphics::getMaxPixels());
+		TImageGraphics::assertPixelCount(6, 4);
+		$this->expectPixelRefusal(5, 5);
+
+		TImageGraphics::setMaxPixels(null);
+		self::assertSame(TImageGraphics::DefaultMaxPixels, TImageGraphics::getMaxPixels());
+	}
+
+	private function expectPixelRefusal(int $width, int $height): void
+	{
+		try {
+			TImageGraphics::assertPixelCount($width, $height);
+			self::fail("a {$width}x{$height} raster must be refused");
+		} catch (TIOException) {
+		}
 	}
 
 	private function requireImagick(): void

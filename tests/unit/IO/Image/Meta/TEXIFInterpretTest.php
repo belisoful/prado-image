@@ -1,6 +1,7 @@
 <?php
 
 use Prado\IO\Image\Meta\TEXIFTags;
+use Prado\Exceptions\TConfigurationException;
 use Prado\IO\Image\TIFF\TTIFFDataType;
 use Prado\IO\Image\TIFF\TTIFFTag;
 
@@ -257,5 +258,68 @@ class TEXIFInterpretTest extends PHPUnit\Framework\TestCase
 		self::assertSame([TEXIFTags::GPS, 2], TEXIFTags::findByName('GPSLatitude', TEXIFTags::GPS));
 		self::assertNull(TEXIFTags::findByName('GPSLatitude', TEXIFTags::EXIF));
 		self::assertSame('ExposureTime', TEXIFTags::nameOf(TEXIFTags::EXIF, 33434));
+	}
+
+	public function testTagStoredInATypeItsDefinitionDoesNotTake()
+	{
+		// A field can carry any TIFF type whatever its tag defines.  Rendering one that
+		// does not fit shows what is stored instead of indexing or casting by its shape.
+		set_error_handler(static function (int $no, string $message): never {
+			throw new \ErrorException($message, 0, $no);
+		});
+		try {
+			// An enumeration stored as a rational, and as a float: neither keys a lookup.
+			$orientation = new TTIFFTag(274, TTIFFDataType::URational, [[3, 1]]);
+			self::assertSame('3', TEXIFTags::textValue($orientation, TEXIFTags::TIFF));
+			$orientation = new TTIFFTag(274, TTIFFDataType::Float, [1.5]);
+			self::assertSame('1.5', TEXIFTags::textValue($orientation, TEXIFTags::TIFF));
+			// Stored as text it still looks up, and reports what it does not know.
+			$orientation = new TTIFFTag(274, TTIFFDataType::Ascii, 'sideways');
+			self::assertSame('Unknown (sideways)', TEXIFTags::textValue($orientation, TEXIFTags::TIFF));
+
+			// A text tag stored as rationals spells no text.
+			$make = new TTIFFTag(271, TTIFFDataType::URational, [[1, 2], [3, 1]]);
+			self::assertSame('1/2, 3', TEXIFTags::textValue($make, TEXIFTags::TIFF));
+
+			// A character-coded comment stored as numbers has no charset signature to read.
+			$comment = new TTIFFTag(37510, TTIFFDataType::UShort, [1, 2]);
+			self::assertSame('1, 2', TEXIFTags::textValue($comment, TEXIFTags::EXIF));
+		} finally {
+			restore_error_handler();
+		}
+	}
+
+	public function testCodedStringsWithoutIconv()
+	{
+		// ext-iconv is only suggested.  Without it ASCII still round-trips; a comment in a
+		// charset that needs converting reads as one that does not convert, and writing
+		// one is refused, since it would otherwise be written empty.
+		self::assertSame("ASCII\0\0\0plain", TEXIFTagsWithoutIconv::encodeCodedString('plain'));
+		self::assertSame('plain', TEXIFTagsWithoutIconv::decodeCodedString("ASCII\0\0\0plain"));
+
+		$unicode = TEXIFTags::encodeCodedString('Grüße', 'UNICODE');
+		self::assertSame('Grüße', TEXIFTags::decodeCodedString($unicode));
+		self::assertSame('', TEXIFTagsWithoutIconv::decodeCodedString($unicode));
+		self::assertSame('raw', TEXIFTagsWithoutIconv::decodeCodedString("JIS\0\0\0\0\0raw"));
+
+		foreach (['UNICODE', 'JIS', null] as $charset) {
+			try {
+				TEXIFTagsWithoutIconv::encodeCodedString('Grüße', $charset);
+				self::fail('encoding ' . ($charset ?? 'non-ASCII text') . ' must be refused without ext-iconv');
+			} catch (TConfigurationException) {
+			}
+		}
+	}
+}
+
+/**
+ * The tag tables on an installation without ext-iconv: the extension check is the seam
+ * the charset conversion routes through, so overriding it stands in for its absence.
+ */
+class TEXIFTagsWithoutIconv extends TEXIFTags
+{
+	protected static function hasIconv(): bool
+	{
+		return false;
 	}
 }
