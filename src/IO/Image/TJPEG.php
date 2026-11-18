@@ -798,6 +798,7 @@ class TJPEG extends TImageFile
 		$this->scanDimensions($bytes);
 
 		$chunks = ['icc' => [], 'irb' => [], 'jumbf' => [], 'xmpext' => []];
+		$parts = 0;
 		$i = 2;
 		while ($i + 1 < $len) {
 			if (ord($bytes[$i]) !== self::MARKER_PREFIX) {
@@ -818,6 +819,7 @@ class TJPEG extends TImageFile
 			}
 			$segLen = (ord($bytes[$i + 2]) << 8) | ord($bytes[$i + 3]);
 			$payload = substr($bytes, $i + 4, $segLen - 2);
+			self::assertPartCount(++$parts, $len);
 			$this->ingestSegment($marker, $payload, $chunks);
 			$i += 2 + $segLen;
 		}
@@ -890,6 +892,7 @@ class TJPEG extends TImageFile
 			throw new TIOException('jpeg_invalid', 'missing SOI marker');
 		}
 		$chunks = ['icc' => [], 'irb' => [], 'jumbf' => [], 'xmpext' => []];
+		$parts = 0;
 		while (($marker = $this->nextMarker($stream)) !== null) {
 			[$m, $markerOffset] = $marker;
 			if ($m === self::SOS || $m === self::EOI) {   // the rest of the file is the scan
@@ -905,6 +908,7 @@ class TJPEG extends TImageFile
 			}
 			$segLen = (int) unpack('n', TStreamHelper::copyToString($stream, 2))[1];
 			$payload = TStreamHelper::copyToString($stream, $segLen - 2);
+			self::assertPartCount(++$parts, $stream->tell());
 			if (self::isStartOfFrameMarker($m) || $m === self::DHP) {
 				$this->readStartOfFrame($payload);
 			} elseif ($m === self::DNL) {

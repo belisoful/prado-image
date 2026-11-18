@@ -128,6 +128,8 @@ class TRIFF extends TComponent
 		$riff->_formType = substr($header, 8, 4);
 		$big = $riff->getIsBigEndian();
 		$sizes64 = [];
+		$count = 0;
+		$walked = 0;
 		while (true) {
 			$start = $stream->tell();
 			$chunkHeader = TStreamHelper::copyToString($stream, 8);
@@ -140,6 +142,8 @@ class TRIFF extends TComponent
 				$size = $sizes64[$id];
 			}
 			$whole = 8 + $size + ($size & 1); // header + payload + even-length pad
+			$walked = $start + $whole;
+			TImageFile::assertPartCount(++$count, $walked);
 			$isList = $id === TRIFFChunkType::RiffList && $size >= 4;
 			$qualified = $isList ? $id . ':' . TStreamHelper::copyToString($stream, 4) : $id;
 			if ($isList) {
@@ -152,9 +156,13 @@ class TRIFF extends TComponent
 				if ($id === TRIFFChunkType::DataSize64) {
 					$sizes64 = self::readSize64Chunk($payload);   // the first chunk sizes the rest
 				}
-				$riff->_chunks[] = $isList
+				$chunk = $isList
 					? new TRIFFList($id, $size, $start + 8, $payload, 0, $big)
 					: new TImageChunk($id, $size, $start + 8, $payload);
+				if ($chunk instanceof TRIFFList) {
+					$chunk->sharePartCount($count, $walked);
+				}
+				$riff->_chunks[] = $chunk;
 			}
 			$stream->seek($start + $whole);
 		}
@@ -482,11 +490,16 @@ class TRIFF extends TComponent
 	 * @param bool $bigEndian Whether the sizes are big-endian, as an `RIFX` container's are.
 	 * @param array<string, int> $sizes64 The real sizes of the chunks whose stored size is the
 	 *   {@see TRIFFChunkType::Size64Sentinel}, keyed by chunk id, from a `ds64` chunk.
+	 * @param int $count The chunks counted so far against the {@see TImageFile::getMaxParts() part
+	 *   ceiling}, by reference; a caller starting a walk leaves it out.  Every list found is joined to it.
+	 * @param ?int $total The length of the data the walk covers, by reference; null for these bytes.
+	 * @throws TIOException When the walk meets more chunks than its ceiling and length allow.
 	 * @return array{0: array<int, TImageChunk>, 1: string} The chunks and the trailing remainder.
 	 */
-	public static function parseChunks(string $bytes, int $start, int $end, int $origin = 0, int $depth = 0, bool $bigEndian = false, array $sizes64 = []): array
+	public static function parseChunks(string $bytes, int $start, int $end, int $origin = 0, int $depth = 0, bool $bigEndian = false, array $sizes64 = [], int &$count = 0, ?int &$total = null): array
 	{
 		$chunks = [];
+		$total ??= strlen($bytes);
 		$i = $start;
 		while ($i + 8 <= $end) {
 			$id = substr($bytes, $i, 4);
@@ -495,8 +508,11 @@ class TRIFF extends TComponent
 				$size = $sizes64[$id];   // the real size lives in the ds64 chunk
 			}
 			$payload = substr($bytes, $i + 8, max(0, min($size, $end - $i - 8)));
+			TImageFile::assertPartCount(++$count, $total);
 			if ($id === TRIFFChunkType::RiffList && strlen($payload) >= 4 && $depth < TRIFFList::MaxDepth) {
-				$chunks[] = new TRIFFList($id, $size, $origin + $i + 8, $payload, $depth, $bigEndian);
+				$list = new TRIFFList($id, $size, $origin + $i + 8, $payload, $depth, $bigEndian);
+				$list->sharePartCount($count, $total);
+				$chunks[] = $list;
 			} else {
 				$chunks[] = new TImageChunk($id, $size, $origin + $i + 8, $payload);
 			}

@@ -71,12 +71,15 @@ class TPNG extends TImageFile
 
 	/**
 	 * @var int The most bytes a compressed chunk (`iCCP`, `zTXt`, a compressed `iTXt`) may
-	 *   inflate to: 64 MiB.  Deflate reaches ratios near 1000:1, so without a ceiling a
+	 *   inflate to: 16 MiB.  Deflate reaches ratios near 1000:1, so without a ceiling a
 	 *   chunk of a few hundred kilobytes exhausts the memory limit, which is a fatal error
 	 *   no caller can catch.  A chunk that would inflate past this reads as undecodable.
+	 *   The size is set by what reading costs, not by what is stored: a hex-encoded raw
+	 *   profile peaks at over four times its inflated length while it is decoded and
+	 *   parsed, so this is the most that still fits a 128 MiB memory limit.
 	 *   The accessors resolve it late (`static::`), so a subclass may raise or lower it.
 	 */
-	public const MaxInflatedSize = 0x4000000;
+	public const MaxInflatedSize = 0x1000000;
 
 	/**
 	 * @var string[] The chunk order the PNG specification requires: the header, the
@@ -987,6 +990,7 @@ class TPNG extends TImageFile
 			$size = (int) unpack('N', substr($bytes, $i, 4))[1];
 			$type = substr($bytes, $i + 4, 4);
 			$payload = substr($bytes, $i + 8, $size);
+			self::assertPartCount(count($this->_chunks) + 1, $len);
 			$this->_chunks[] = new TImageChunk($type, $size, $i + 8, $payload);
 			if ($type === TPNGChunkType::Header && strlen($payload) >= 8) {
 				$this->setWidthDirect((int) unpack('N', substr($payload, 0, 4))[1]);
@@ -1048,6 +1052,7 @@ class TPNG extends TImageFile
 			}
 			$size = (int) unpack('N', substr($header, 0, 4))[1];
 			$type = substr($header, 4, 4);
+			self::assertPartCount(count($this->_chunks) + 1, $start + 8 + $size);
 			if ($type === TPNGChunkType::ImageData) {
 				// Defer the whole on-disk chunk (length + type + payload + CRC) and skip its bytes.
 				$this->_chunks[] = TImageChunk::deferred($type, $size, $start + 8, $stream, $start, 8 + $size + 4);

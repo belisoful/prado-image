@@ -13,6 +13,7 @@ namespace Prado\IO\Image\Meta;
 use Prado\Collections\TMap;
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\IO\Image\IPrivacyScrubbable;
+use Prado\IO\Image\TImageFile;
 use Prado\IO\Image\TImageGraphics;
 use Prado\IO\Image\TImageGraphicsMode;
 use Prado\IO\Image\TPhotoshop8BIM;
@@ -499,6 +500,11 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 
 		$this->clear();
 		$first = true;
+		// A repeatable dataset is gathered here and added once, when the walk ends: adding
+		// each value as it is met would filter and copy every earlier one again, which is
+		// quadratic in a block that repeats one dataset thousands of times.
+		$repeated = [];
+		$count = 0;
 		while ($position < $end) {
 			if ($read(1) !== self::IPTC_TAG_MARKER) {
 				if ($first) {
@@ -525,18 +531,19 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 			}
 
 			$tag = self::formatTag($record, $tagid);
-			if (!array_key_exists($tag, self::TAG_MAP)) {
+			if (!array_key_exists($tag, self::TAG_MAP) || !TImageFile::allowsPartCount(++$count, $length)) {
 				return false;
 			}
 			$value = $this->decodeValue($tag, $value, $record, $tagid, $charset);
 
 			if (self::TAG_MAP[$tag][self::PROPERTY_KEY] & self::PROP_REPEATABLE) {
-				$values = $this[$tag] ?? [];
-				$values[] = $value;
-				$this[$tag] = $values;
+				$repeated[$tag][] = $value;
 			} elseif (!$this->contains($tag)) {
 				$this[$tag] = $value;
 			}
+		}
+		foreach ($repeated as $tag => $values) {
+			$this[$tag] = $values;
 		}
 		return true;
 	}

@@ -6,6 +6,7 @@ use Prado\IO\Image\Meta\TEXIF;
 use Prado\IO\Image\TIFF\TTIFFDataType;
 use Prado\IO\Image\TIFF\TTIFFDocument;
 use Prado\IO\Image\TIFF\TTIFFIfd;
+use Prado\IO\Image\TImageFile;
 use Prado\IO\Image\TTIFF;
 use Prado\IO\Stream\TNoSeekStream;
 use Prado\IO\Stream\TStreamDecorator;
@@ -289,6 +290,32 @@ class TTIFFScanTest extends PHPUnit\Framework\TestCase
 		self::assertSame('abc', $scanned->getIfd(0)->getTagValue(271));
 		self::assertSame('def', $scanned->getIfd(1)->getTagValue(272));
 		self::assertNotEmpty(array_filter($scanned->getWarnings(), fn ($w) => str_contains($w, 'loops back to offset 8')));
+	}
+
+	public function testScanDoesNotFollowASubIfdPointerBackAtAnIfdAlreadyRead()
+	{
+		// IFD0 holds the Exif IFD pointer twice, both back at IFD0 itself.
+		$bytes = "MM\x00\x2A\x00\x00\x00\x08" . pack('n', 2) . str_repeat(pack('nnNN', 0x8769, 4, 1, 8), 2) . pack('N', 0);
+
+		$scanned = TTIFFDocument::scanStream(TStream::fromString($bytes));
+
+		self::assertCount(1, $scanned->getIfds());
+		self::assertNull($scanned->getIfd(0)->getTag(0x8769)->getSubIfd());
+		self::assertCount(2, array_filter($scanned->getWarnings(), fn ($w) => str_contains($w, 'tag 34665 points at the IFD at offset 8, which was already read')));
+	}
+
+	public function testScanRefusesADocumentOverThePartCeiling()
+	{
+		$bytes = "MM\x00\x2A\x00\x00\x00\x08" . pack('n', 12) . str_repeat(pack('nnNN', 0x0100, 4, 1, 1), 12) . pack('N', 0);
+		TImageFile::setMaxParts(8);
+		try {
+			TTIFFDocument::scanStream(TStream::fromString($bytes));
+			self::fail('twelve entries are over a ceiling of eight');
+		} catch (TIOException $e) {
+			self::assertStringContainsString('parts', $e->getMessage());
+		} finally {
+			TImageFile::setMaxParts(null);
+		}
 	}
 
 	public function testScanWarnsOnAnIfdOutsideTheData()

@@ -1,13 +1,14 @@
 <?php
 
-use Prado\Prado;
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\IO\Image\IImageGraphicsLibrary;
 use Prado\IO\Image\Meta\TIPTC;
 use Prado\IO\Image\Meta\TIPTCTags;
+use Prado\IO\Image\TImageFile;
 use Prado\IO\Image\TImageGraphics;
 use Prado\IO\Image\TImageGraphicsMode;
 use Prado\IO\TStream;
+use Prado\Prado;
 
 class TIPTCTest extends PHPUnit\Framework\TestCase
 {
@@ -1116,6 +1117,39 @@ class TIPTCTest extends PHPUnit\Framework\TestCase
 			$iptc[TIPTCTags::CodedCharacterSet] = 'ISO-8859-1';
 			$iptc[TIPTCTags::CaptionAbstract] = $text;
 			self::assertStringContainsString("\x1C\x02\x78" . pack('n', strlen($bytes)) . $bytes, $iptc->toBinary(false), get_class($iptc));
+		}
+	}
+
+	public function testADatasetRepeatedThousandsOfTimesIsReadInOnePass()
+	{
+		// Adding each keyword as it was met used to filter and copy every earlier one again:
+		// twenty thousand of them were two hundred million steps, from a block of two
+		// hundred kilobytes.
+		$block = '';
+		for ($i = 0; $i < 20000; $i++) {
+			$block .= "\x1C\x02\x19\x00\x05" . sprintf('k%04x', $i);
+		}
+		$block .= "\x1C\x02\x78\x00\x07caption";
+
+		$iptc = TIPTC::parse($block);
+
+		self::assertCount(20000, $iptc[TIPTCTags::Keywords]);
+		self::assertSame('k0000', $iptc[TIPTCTags::Keywords][0]);
+		self::assertSame('k4e1f', $iptc[TIPTCTags::Keywords][19999], 'in the order they were stored');
+		self::assertSame('caption', $iptc[TIPTCTags::CaptionAbstract]);
+	}
+
+	public function testABlockOfMoreDatasetsThanThePartCeilingAllowsReadsAsAbsent()
+	{
+		$datasets = fn (int $n) => str_repeat("\x1C\x02\x19\x00\x00", $n);
+		TImageFile::setMaxParts(8);
+		try {
+			$eight = $datasets(8);
+			self::assertCount(8, TIPTC::parse($eight)[TIPTCTags::Keywords]);
+			$twelve = $datasets(12);
+			self::assertFalse(TIPTC::parse($twelve));
+		} finally {
+			TImageFile::setMaxParts(null);
 		}
 	}
 
