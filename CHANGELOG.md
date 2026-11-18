@@ -55,6 +55,9 @@ so.
 
 ### Changed
 
+- **`pradosoft/prado` is a runtime requirement** (prado-image only). It was listed under
+  `require-dev`, though the classes extend `TComponent` and use `TMap` and the `TStream` layer,
+  so the package did not install on its own outside a PRADO application.
 - **PHP 8.2 is now the minimum** in both mirrors. The PRADO framework that prado-image builds on
   requires it, and the two repositories share code file for file, so they share a language
   floor too. PHP 8.1 is past end of life; CI no longer runs it.

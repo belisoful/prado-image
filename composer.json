@@ -35,7 +35,7 @@
 		"ccitt",
 		"extension"
 	],
-	"homepage": "https://github.com/pradosoft/prado-image",
+	"homepage": "https://github.com/belisoful/prado-image",
 	"license": "BSD-3-Clause",
 	"authors": [
 		{
@@ -57,7 +57,8 @@
 		}
 	],
 	"require": {
-		"php": ">=8.2.0"
+		"php": ">=8.2.0",
+		"pradosoft/prado": "^4.4"
 	},
 	"suggest": {
 		"ext-gd": "Raster conversion as \\GdImage objects (TImageGraphics's preferred library).",
@@ -67,7 +68,6 @@
 		"ext-iconv": "Charset conversion of IPTC text, EXIF UserComment, and Photoshop unicode strings."
 	},
 	"require-dev": {
-		"pradosoft/prado": "^4.4@dev",
 		"phpunit/phpunit": "^10",
 		"phpdocumentor/shim": "^3",
 		"friendsofphp/php-cs-fixer": "^3.94",
