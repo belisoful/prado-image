@@ -5,6 +5,7 @@ use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\Exceptions\TInvalidDataValueException;
 use Prado\Exceptions\TIOException;
 use Prado\IO\Image\IImageGraphicsLibrary;
+use Prado\IO\Image\TImageFile;
 use Prado\IO\Image\TImageGraphics;
 use Prado\IO\Image\TImageGraphicsGD;
 use Prado\IO\Image\TImageGraphicsImagick;
@@ -25,14 +26,20 @@ class TImageGraphicsTest extends PHPUnit\Framework\TestCase
 	public function testPixelCeiling()
 	{
 		// The ceiling bounds what a raster may declare before a decoder sizes a buffer from it.
+		// The default is the one of a process with no memory limit to size a ceiling from.
 		self::assertSame(1 << 28, TImageGraphics::DefaultMaxPixels);
-		self::assertSame(TImageGraphics::DefaultMaxPixels, TImageGraphics::getMaxPixels());
-		TImageGraphics::assertPixelCount(16384, 16384);   // exactly at the ceiling
+		$limit = ini_set('memory_limit', '-1');
 		try {
-			TImageGraphics::assertPixelCount(16385, 16384);
-			self::fail('a raster over the ceiling must be refused');
-		} catch (TIOException $e) {
-			self::assertSame('imagegraphics_raster_too_large', $e->getErrorCode());
+			self::assertSame(TImageGraphics::DefaultMaxPixels, TImageGraphics::getMaxPixels());
+			TImageGraphics::assertPixelCount(16384, 16384);   // exactly at the ceiling
+			try {
+				TImageGraphics::assertPixelCount(16385, 16384);
+				self::fail('a raster over the ceiling must be refused');
+			} catch (TIOException $e) {
+				self::assertSame('imagegraphics_raster_too_large', $e->getErrorCode());
+			}
+		} finally {
+			ini_set('memory_limit', $limit);
 		}
 		// A product past the integer range is still simply too many.
 		$this->expectPixelRefusal(PHP_INT_MAX, PHP_INT_MAX);
@@ -42,8 +49,9 @@ class TImageGraphicsTest extends PHPUnit\Framework\TestCase
 		TImageGraphics::assertPixelCount(6, 4);
 		$this->expectPixelRefusal(5, 5);
 
+		// Set back, the ceiling is the memory budget's again.
 		TImageGraphics::setMaxPixels(null);
-		self::assertSame(TImageGraphics::DefaultMaxPixels, TImageGraphics::getMaxPixels());
+		self::assertSame(TImageFile::getBudgetCeiling(TImageFile::BudgetBytesPerPixel) ?? TImageGraphics::DefaultMaxPixels, TImageGraphics::getMaxPixels());
 	}
 
 	private function expectPixelRefusal(int $width, int $height): void

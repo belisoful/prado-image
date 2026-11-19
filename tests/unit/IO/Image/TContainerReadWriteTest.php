@@ -12,6 +12,7 @@ use Prado\IO\Image\Meta\TIPTC;
 use Prado\IO\Image\Meta\TIPTCTags;
 use Prado\IO\Image\Meta\TXMP;
 use Prado\IO\Image\TImageChunk;
+use Prado\IO\Image\TImageFile;
 use Prado\IO\Image\TImageGraphics;
 use Prado\IO\Image\TJPEG;
 use Prado\IO\Image\TPhotoshopIRB;
@@ -560,6 +561,15 @@ class TContainerReadWriteTest extends PHPUnit\Framework\TestCase
 		self::assertSame(16 * 1024 * 1024, TPNG::MaxInflatedSize);
 		self::assertSame(1024, TSmallInflatePNG::getMaxInflatedSize());
 
+		// A subclass that states its own ceiling is held to it, not to the memory budget.
+		try {
+			TImageFile::setMemoryBudget('1G');
+			self::assertSame(128 << 20, TPNG::getMaxInflatedSize());
+			self::assertSame(1024, TSmallInflatePNG::getMaxInflatedSize());
+		} finally {
+			TImageFile::setMemoryBudget(null);
+		}
+
 		// The ceiling also moves at run time, for every PNG class; none at all refuses each
 		// compressed chunk rather than asking zlib for no limit.
 		try {
@@ -574,7 +584,7 @@ class TContainerReadWriteTest extends PHPUnit\Framework\TestCase
 		} finally {
 			TPNG::setMaxInflatedSize(null);
 		}
-		self::assertSame(TPNG::MaxInflatedSize, TPNG::getMaxInflatedSize());
+		self::assertSame(TImageFile::getBudgetCeiling(TImageFile::BudgetBytesPerInflatedByte) ?? TPNG::MaxInflatedSize, TPNG::getMaxInflatedSize(), 'set back, the ceiling is the memory budget\'s again');
 		self::assertSame($profile, TPNG::fromString($bytes)->getICCProfile());
 	}
 
