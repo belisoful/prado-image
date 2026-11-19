@@ -37,5 +37,7 @@ The library is pre-1.0. Fixes land in the next release; earlier releases are not
 Three ceilings bound what an untrusted file can cost, and each can be moved:
 `TPNG::setMaxInflatedSize()` for compressed PNG chunks, `TImageGraphics::setMaxPixels()` for
 the pure-PHP raster decoders, and `TImageFile::setMaxParts()` for the number of structural parts
-a file may hold. `TImageFile::setMemoryBudget()` sets all three from one number. The README
+a file may hold. All three are sized from a memory budget: half of PHP's `memory_limit` unless
+`TImageFile::setMemoryBudget()` says otherwise, in bytes, as a size such as `'256M'`, or as a share
+of the limit such as `'25%'`. The README
 paragraph that begins "Files from strangers" describes them.
