@@ -114,6 +114,10 @@ let a small file stop a PHP process or leave data behind that the caller had rem
 
 ### Fixed
 
+- Error messages that quote an argument printed the placeholder instead: the framework formats
+  a message file's entries as ICU MessageFormat patterns, where `'{0}'` is the literal text
+  `{0}`, so "Image file '{0}' cannot be written." lost the path it was about. The 31 messages
+  written that way now use `''{0}''`, and a test renders every message with its arguments.
 - `save()` wrote over the file in place, so a write that failed part-way — a full disk — left
   half a file where the original had been. It now writes a temporary file beside the target
   and renames it over, keeping the target's permission bits and following a symbolic link to
