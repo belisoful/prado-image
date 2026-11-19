@@ -451,18 +451,15 @@ class TEXIFAudio extends TComponent
 	}
 
 	/**
-	 * Writes the rebuilt WAVE file to disk.
+	 * Writes the rebuilt WAVE file to disk.  An existing file is replaced whole or left as
+	 * it was; see {@see writeFile()}.
 	 * @param string $path The destination path.
 	 * @throws TIOException When the file cannot be written.
 	 * @return int The number of bytes written.
 	 */
 	public function save(string $path): int
 	{
-		$written = @file_put_contents($path, $this->toBinary());
-		if ($written === false) {
-			throw new TIOException('imagefile_unwritable', $path);
-		}
-		return $written;
+		return $this->writeFile($path, $this->toBinary());
 	}
 
 	/**

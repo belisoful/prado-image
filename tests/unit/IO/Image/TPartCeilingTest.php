@@ -6,6 +6,7 @@ use Prado\IO\Image\TAVI;
 use Prado\IO\Image\TBMFF;
 use Prado\IO\Image\TGIF;
 use Prado\IO\Image\TImageFile;
+use Prado\IO\Image\TImageGraphics;
 use Prado\IO\Image\TJPEG;
 use Prado\IO\Image\TJXL;
 use Prado\IO\Image\TPNG;
@@ -27,7 +28,47 @@ class TPartCeilingTest extends PHPUnit\Framework\TestCase
 {
 	protected function tearDown(): void
 	{
-		TImageFile::setMaxParts(null);
+		TImageFile::setMemoryBudget(null);
+	}
+
+	public function testAMemoryBudgetSetsTheThreeCeilings()
+	{
+		// 128 MiB is the budget the parts and inflation defaults were sized for.
+		TImageFile::setMemoryBudget(128 * 1024 * 1024);
+		self::assertSame(TImageFile::DefaultMaxParts, TImageFile::getMaxParts());
+		self::assertSame(TPNG::MaxInflatedSize, TPNG::getMaxInflatedSize());
+		self::assertSame(8 * 1024 * 1024, TImageGraphics::getMaxPixels());
+
+		TImageFile::setMemoryBudget(32 * 1024 * 1024);
+		self::assertSame(16384, TImageFile::getMaxParts());
+		self::assertSame(4 * 1024 * 1024, TPNG::getMaxInflatedSize());
+		self::assertSame(2 * 1024 * 1024, TImageGraphics::getMaxPixels());
+
+		// Each ceiling's own setter still moves it alone.
+		TImageFile::setMaxParts(10);
+		self::assertSame(10, TImageFile::getMaxParts());
+		self::assertSame(4 * 1024 * 1024, TPNG::getMaxInflatedSize());
+
+		TImageFile::setMemoryBudget(null);
+		self::assertSame(TImageFile::DefaultMaxParts, TImageFile::getMaxParts());
+		self::assertSame(TPNG::MaxInflatedSize, TPNG::getMaxInflatedSize());
+		self::assertSame(TImageGraphics::DefaultMaxPixels, TImageGraphics::getMaxPixels());
+	}
+
+	public function testABudgetIsWhatRefusesAFileThatWouldNotFitIt()
+	{
+		// Three hundred empty chunks are nothing to the default ceiling and too many for a
+		// budget of a few hundred kilobytes, which allows two hundred.
+		$png = $this->png(str_repeat($this->pngChunk('tEXt'), 300));
+		self::assertInstanceOf(TPNG::class, TPNG::fromString($png));
+
+		TImageFile::setMemoryBudget(200 * TImageFile::BudgetBytesPerPart);
+		try {
+			TPNG::fromString($png);
+			self::fail('a file over its budget was opened');
+		} catch (TIOException $e) {
+			self::assertSame('imagefile_too_many_parts', $e->getErrorCode());
+		}
 	}
 
 	private function chunk(string $id, string $payload = ''): string
