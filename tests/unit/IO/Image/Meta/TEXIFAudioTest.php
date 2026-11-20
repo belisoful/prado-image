@@ -290,7 +290,7 @@ class TEXIFAudioTest extends PHPUnit\Framework\TestCase
 			$audio->save('/no-such-directory-for-prado/SND00001.WAV');
 			self::fail('save() accepted an unwritable path');
 		} catch (TIOException $e) {
-			self::assertSame('imagefile_unwritable', $e->getErrorCode());
+			self::assertSame('imagefile_no_temporary_file', $e->getErrorCode());
 		}
 	}
 

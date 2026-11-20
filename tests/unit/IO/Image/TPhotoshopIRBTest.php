@@ -53,6 +53,25 @@ class TPhotoshopIRBTest extends PHPUnit\Framework\TestCase
 		self::assertFalse($reparsed->getResource(TPhotoshopResource::IptcNaa) !== null);
 	}
 
+	public function testSettingTheIptcItAlreadyHoldsLeavesTheResourceAsItIs()
+	{
+		// Datasets no writer here would order this way, under a resource with a name.
+		$block = "\x1C\x02\x78\x00\x07caption" . "\x1C\x02\x05\x00\x04name";
+		$irb = new TPhotoshopIRB();
+		$irb->setResource(new TPhotoshopResource(TPhotoshopResource::IptcNaa, $block, 'named'));
+		$before = $irb->toBinary();
+
+		$iptc = $irb->getIPTC();
+		$irb->setIPTC($iptc);
+		self::assertSame('named', $irb->getResource(TPhotoshopResource::IptcNaa)->getName());
+		self::assertSame(bin2hex($before), bin2hex($irb->toBinary()));
+
+		// A changed set replaces it.
+		$iptc[TIPTCTags::CaptionAbstract] = 'edited';
+		$irb->setIPTC($iptc);
+		self::assertSame("\x1C\x02\x78\x00\x06edited" . "\x1C\x02\x05\x00\x04name", $irb->getResource(TPhotoshopResource::IptcNaa)->getData());
+	}
+
 	public function testGetIptcAnswersNullForAnUnparsableResource()
 	{
 		$irb = new TPhotoshopIRB();

@@ -19,9 +19,11 @@ use Prado\IO\Image\TPhotoshopIRB;
 use Prado\IO\Image\TPhotoshopResource;
 use Prado\IO\Image\TPNG;
 use Prado\IO\Image\TPrivacyCategory;
+use Prado\IO\Image\TIFF\TTIFFDataType;
 use Prado\IO\Image\TTIFF;
 use Prado\IO\Image\TRIFFChunkType;
 use Prado\IO\Image\TWebP;
+use Prado\IO\TStream;
 use Prado\IO\Image\TGIF;
 use Prado\IO\Image\GIF\TGIFBlockType;
 use Prado\IO\Image\GIF\TGIFExtension;
@@ -154,6 +156,139 @@ class TContainerReadWriteTest extends PHPUnit\Framework\TestCase
 		ob_start();
 		imagejpeg($this->gdImage());
 		return (string) ob_get_clean();
+	}
+
+	//
+	// ─── IPTC as another writer left it ──────────────────────────────────────
+	//
+
+	/**
+	 * Datasets nothing like the library's own writing of them: out of the order of their
+	 * ids, a repeated one split by another, a name longer than its dataset allows.
+	 */
+	private function foreignIptc(): string
+	{
+		return "\x1C\x02\x78\x00\x07caption"
+			. "\x1C\x02\x19\x00\x03one"
+			. "\x1C\x02\x05\x00\x46" . str_repeat('n', 70)
+			. "\x1C\x02\x19\x00\x03two";
+	}
+
+	private function foreignIrb(): TPhotoshopIRB
+	{
+		$irb = new TPhotoshopIRB();
+		$irb->setResource(new TPhotoshopResource(TPhotoshopResource::IptcNaa, $this->foreignIptc(), 'named'));
+		return $irb;
+	}
+
+	public function testARoundTripLeavesTheIptcOfAJpegOrPngByteForByte()
+	{
+		// The block as Photoshop writes it into a JPEG: an APP13 segment after the SOI marker.
+		$payload = "Photoshop 3.0\0" . $this->foreignIrb()->toBinary();
+		$jpeg = $this->jpeg();
+		$jpeg = substr($jpeg, 0, 2) . "\xFF\xED" . pack('n', strlen($payload) + 2) . $payload . substr($jpeg, 2);
+		$png = TPNG::fromString($this->png());
+		$png->setPhotoshopIRB($this->foreignIrb());
+
+		foreach ([TJPEG::class => $jpeg, TPNG::class => $png->toBinary()] as $class => $bytes) {
+			// One pass through the library settles the layout; the next must change nothing.
+			$file = $class::fromString($bytes)->toBinary();
+
+			// Read, looked at, and written: the same file.
+			$read = $class::fromString($file);
+			self::assertSame(['one', 'two'], $read->getIPTC()[TIPTCTags::Keywords], $class);
+			self::assertSame(bin2hex($file), bin2hex($read->toBinary()), $class);
+			self::assertSame('named', $read->getPhotoshopIRB()->getResource(TPhotoshopResource::IptcNaa)->getName(), $class);
+
+			// Set back as it was read: still the same file.
+			$read->setIPTC($read->getIPTC());
+			self::assertSame(bin2hex($file), bin2hex($read->toBinary()), $class);
+
+			// An edit is written, in the order the file had.
+			$iptc = $read->getIPTC();
+			$iptc[TIPTCTags::CaptionAbstract] = 'edited';
+			$read->setIPTC($iptc);
+			$edited = $class::fromString($read->toBinary())->getIPTC();
+			self::assertSame('edited', $edited[TIPTCTags::CaptionAbstract], $class);
+			self::assertSame([TIPTCTags::CaptionAbstract, TIPTCTags::Keywords, TIPTCTags::ObjectName], $edited->getKeys(), $class);
+		}
+	}
+
+	/**
+	 * A TIFF holding the foreign IPTC in tag 33723 under a type, in its Photoshop
+	 * resources, or both.
+	 * @param ?int $tagType
+	 * @param bool $inResources
+	 */
+	private function tiffWithForeignIptc(?int $tagType, bool $inResources): string
+	{
+		$exif = $this->exif();
+		$exif->getIfd0()->setTagValues(TTIFF::WidthTag, TTIFFDataType::ULong, [6]);
+		$exif->getIfd0()->setTagValues(TTIFF::HeightTag, TTIFFDataType::ULong, [4]);
+		if ($tagType !== null) {
+			$exif->getIfd0()->setTagValues(TEXIF::IptcTag, $tagType, $tagType === TTIFFDataType::UByte ? array_map('ord', str_split($this->foreignIptc())) : $this->foreignIptc());
+		}
+		if ($inResources) {
+			$exif->setIRB($this->foreignIrb());
+		}
+		return $exif->getTiff()->toBinary();
+	}
+
+	public function testARoundTripLeavesTheIptcOfATiffWhereAndAsItWas()
+	{
+		$undefined = TTIFFDataType::Undefined;
+		$byte = TTIFFDataType::UByte;
+		$homes = [
+			'the tag, as UNDEFINED' => [$undefined, false],
+			'the tag, as BYTE' => [$byte, false],
+			'the Photoshop resources alone' => [null, true],
+			'the tag and the Photoshop resources' => [$undefined, true],
+		];
+		foreach ($homes as $what => [$tagType, $inResources]) {
+			// One pass through the library settles the layout; the next must change nothing.
+			$file = TTIFF::fromString($this->tiffWithForeignIptc($tagType, $inResources))->toBinary();
+			$read = TTIFF::fromString($file);
+			self::assertSame(['one', 'two'], $read->getIPTC()[TIPTCTags::Keywords], $what);
+			self::assertSame(bin2hex($file), bin2hex($read->toBinary()), $what);
+
+			$tag = $read->getEXIF()->getIfd0()->getTag(TEXIF::IptcTag);
+			self::assertSame($tagType, $tag?->getType(), "$what: no tag is added and none changes its type");
+			self::assertSame($inResources ? 'named' : null, $read->getPhotoshopIRB()?->getResource(TPhotoshopResource::IptcNaa)->getName(), $what);
+
+			// Set back as it was read, and written to a stream: still the same file.
+			$read->setIPTC($read->getIPTC());
+			$target = TStream::fromMemory('w+b');
+			$read->streamTo($target);
+			self::assertSame(bin2hex($file), bin2hex((string) $target), $what);
+		}
+	}
+
+	public function testAChangedIptcIsWrittenToEveryHomeATiffKeepsItIn()
+	{
+		$undefined = TTIFFDataType::Undefined;
+		foreach (['the tag' => [$undefined, false], 'the Photoshop resources' => [null, true], 'both' => [$undefined, true]] as $what => [$tagType, $inResources]) {
+			$tiff = TTIFF::fromString($this->tiffWithForeignIptc($tagType, $inResources));
+			$iptc = $tiff->getIPTC();
+			$iptc[TIPTCTags::CaptionAbstract] = 'edited';
+			$tiff->setIPTC($iptc);
+
+			$read = TTIFF::fromString($tiff->toBinary());
+			$tag = $read->getEXIF()->getIfd0()->getTag(TEXIF::IptcTag);
+			self::assertSame(TTIFFDataType::ULong, $tag->getType(), "$what: a written tag is LONG");
+			self::assertSame('edited', $read->getEXIF()->getIPTC()[TIPTCTags::CaptionAbstract], $what);
+			self::assertSame($inResources ? 'edited' : null, $read->getPhotoshopIRB()?->getIPTC()[TIPTCTags::CaptionAbstract], "$what: the two never disagree");
+			self::assertSame([TIPTCTags::CaptionAbstract, TIPTCTags::Keywords, TIPTCTags::ObjectName], $read->getIPTC()->getKeys(), $what);
+
+			// Composing twice writes it once.
+			self::assertSame(bin2hex($tiff->toBinary()), bin2hex($tiff->toBinary()), $what);
+
+			// Dropped, it is gone from both.
+			$read->setIPTC(null);
+			$dropped = TTIFF::fromString($read->toBinary());
+			self::assertNull($dropped->getIPTC(), $what);
+			self::assertNull($dropped->getEXIF()->getIfd0()->getTag(TEXIF::IptcTag), $what);
+			self::assertNull($dropped->getPhotoshopIRB()?->getResource(TPhotoshopResource::IptcNaa), $what);
+		}
 	}
 
 	//

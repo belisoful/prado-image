@@ -71,10 +71,13 @@ class TRIFF extends TComponent
 	/**
 	 * Creates a reader from a raw byte string.
 	 * @param string $bytes The RIFF bytes.
+	 * @throws TIOException When the bytes are longer than the
+	 *   {@see TImageFile::getMaxFileSize() file ceiling}.
 	 * @return static The parsed reader.
 	 */
 	public static function fromString(string $bytes): static
 	{
+		TImageFile::assertFileSize(strlen($bytes));
 		$riff = Prado::createComponent(static::class);
 		$riff->parse($bytes);
 		return $riff;
@@ -94,7 +97,7 @@ class TRIFF extends TComponent
 		if ($stream instanceof StreamInterface && $stream->isSeekable()) {
 			$stream->seek(0);
 		}
-		return static::fromString(static::sourceBytes($stream));
+		return static::fromString(static::fileBytes($stream));
 	}
 
 	/**
@@ -177,11 +180,7 @@ class TRIFF extends TComponent
 	 */
 	public static function fromFile(string $path): static
 	{
-		$bytes = @file_get_contents($path);
-		if ($bytes === false) {
-			throw new TIOException('imagefile_unreadable', $path);
-		}
-		return static::fromString($bytes);
+		return static::fromString(static::readFile($path));
 	}
 
 	/**

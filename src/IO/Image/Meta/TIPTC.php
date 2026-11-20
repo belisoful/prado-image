@@ -66,6 +66,13 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 	 */
 	private bool $_asRead = false;
 
+	/**
+	 * @var ?string The datasets' bytes exactly as {@see read() read}, kept until a dataset
+	 *   is added, changed or removed: a set that was only read is written back byte for
+	 *   byte, whatever order, padding or encoding the file had.
+	 */
+	private ?string $_raw = null;
+
 	public const TAGID_REGEX = '/^(240|[123789])#((?:0?|1)(?:0?|[1-9])\d|2(?:[0-4]\d|5[0-5]))$/';
 	public const DATEVALUE_REGEX = '/^\d{4}(?:0[\d]|1[012])(?:[012]\d|3[01])$/i'; // "CCYYMMDD"
 	/**
@@ -495,6 +502,7 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 		}
 
 		$length = strlen($iptc_block);
+		$start = $position;
 		$read = function (int $count) use (&$iptc_block, &$position, $length): string|false {
 			if ($position >= $length) {
 				return false;
@@ -503,7 +511,7 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 			$position += strlen($d);
 			return $d;
 		};
-		$end = $position + (int) $size;
+		$end = $position + max(0, (int) $size);
 
 		$this->clear();
 		$first = true;
@@ -545,6 +553,7 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 
 			if (self::TAG_MAP[$tag][self::PROPERTY_KEY] & self::PROP_REPEATABLE) {
 				$repeated[$tag][] = $value;
+				$this->_d[$tag] = [];   // holds the dataset's place in the order of the file
 			} elseif (!$this->contains($tag)) {
 				$this[$tag] = $value;
 			}
@@ -553,6 +562,7 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 			$this[$tag] = $values;
 		}
 		$this->_asRead = true;
+		$this->_raw = substr($iptc_block, $start, $end - $start);
 		return true;
 	}
 
@@ -638,7 +648,10 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 
 	/**
 	 * Serializes the datasets to an IPTC binary block.  A set built from nothing is
-	 * {@see validate() completed} first; a set read from bytes is written as it stands.
+	 * {@see validate() completed} first and written in the order of its tag ids.  A set read
+	 * from bytes is written as it stands: the very bytes that were read while no dataset
+	 * has been added, changed or removed, and after that its datasets in the order the file
+	 * had them, a repeated dataset's values together where the first of them stood.
 	 * @param null|bool|string $charset The fallback charset, or a bool standing in for $photoshopEncode.
 	 * @param bool $photoshopEncode Whether to wrap the result in a Photoshop 8BIM block (true for JPEG).
 	 * @return string The IPTC binary block.
@@ -648,6 +661,9 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 		if (is_bool($charset)) {
 			$photoshopEncode = $charset;
 			$charset = null;
+		}
+		if ($this->_raw !== null) {
+			return $photoshopEncode ? TPhotoshop8BIM::iptcEncode($this->_raw) : $this->_raw;
 		}
 		$charset ??= self::defaultCharset();
 		if (!$this->_asRead) {
@@ -755,22 +771,25 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 	}
 
 	/**
-	 * Returns an iterator over the datasets, ordered by tag id.
+	 * Returns an iterator over the datasets, in the order {@see toArray()} gives them.
 	 * @return \Iterator The iterator.
 	 */
 	public function getIterator(): \Iterator
 	{
-		ksort($this->_d, SORT_NATURAL);
-		return new \ArrayIterator($this->_d);
+		return new \ArrayIterator($this->toArray());
 	}
 
 	/**
-	 * Returns the datasets as an array, ordered by tag id.
+	 * Returns the datasets as an array, in the order they are written: by tag id for a set
+	 * built from nothing, and for a set {@see read() read from bytes} the order the file
+	 * had them, with a dataset added since ahead of the first of a later record.
 	 * @return array The datasets.
 	 */
 	public function toArray(): array
 	{
-		ksort($this->_d, SORT_NATURAL);
+		if (!$this->_asRead) {
+			ksort($this->_d, SORT_NATURAL);
+		}
 		return $this->_d;
 	}
 
@@ -809,8 +828,36 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 			self::fixBoundary($value, $metaMin, $metaMax);
 		}
 
+		$known = array_key_exists($key, $this->_d);
+		if (!$known || $this->_d[$key] !== $value) {
+			$this->_raw = null;
+		}
 		$this->updateEnvelopeNumber($key, $value);
-		return parent::add($key, $value);
+		parent::add($key, $value);
+		if (!$known && $this->_asRead) {
+			$this->place($key);
+		}
+		return $key;
+	}
+
+	/**
+	 * Moves a dataset just added to a set that was read to its place: ahead of the first
+	 * dataset of a later record, else last, so the records keep the order the file had
+	 * them in.
+	 * @param string $key The tag id.
+	 */
+	private function place(string $key): void
+	{
+		$value = $this->_d[$key];
+		unset($this->_d[$key]);
+		$at = 0;
+		foreach ($this->_d as $id => $existing) {
+			if ((int) $id > (int) $key) {
+				break;
+			}
+			$at++;
+		}
+		$this->_d = array_slice($this->_d, 0, $at, true) + [$key => $value] + array_slice($this->_d, $at, null, true);
 	}
 
 	/**
@@ -911,6 +958,7 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 	{
 		parent::clear();
 		$this->_asRead = false;
+		$this->_raw = null;
 	}
 
 	/**
@@ -925,6 +973,9 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 				$oldValue = $this[TIPTCTags::EnvelopeNumber];
 				$this[TIPTCTags::EnvelopeNumber] = self::computeEnvelopeNumber($this[TIPTCTags::ServiceIdentifier], $this[TIPTCTags::DateSent]);
 				return $oldValue;
+			}
+			if (array_key_exists($key, $this->_d)) {
+				$this->_raw = null;
 			}
 			return parent::remove($key);
 		}
@@ -1005,6 +1056,7 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 			}
 			foreach ($datasets as $dataset) {
 				if ($this->contains($dataset)) {
+					$this->_raw = null;
 					parent::remove($dataset);   // bypass the EnvelopeNumber recompute: a scrub must not regenerate an identifier
 					$removed++;
 				}

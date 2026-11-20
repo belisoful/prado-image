@@ -86,8 +86,22 @@ class TTIFF extends TImageFile
 		340, 341, 513, 514, 529, 530, 531, 532, 700, 33723, 34377, 34675,
 	];
 
+	/**
+	 * The IFD0 tags that state the raster's resolution: XResolution (282), YResolution
+	 * (283) and ResolutionUnit (296).  Baseline TIFF requires the first two, so they stay
+	 * with the image when its EXIF is replaced; unlike the {@see ImageTags}, an EXIF that
+	 * states them itself replaces them.
+	 */
+	public const ResolutionTags = [282, 283, 296];
+
 	/** @var ?TEXIF The parsed metadata. */
 	private ?TEXIF $_exif = null;
+
+	/**
+	 * @var ?string The IPTC datasets' bytes as the file held them, or null when it held
+	 *   none: what {@see syncIptc()} compares against, so only a changed set is written.
+	 */
+	private ?string $_iptcBytes = null;
 
 	/**
 	 * Indicates whether the bytes begin with a TIFF byte-order mark and magic number.
@@ -121,8 +135,9 @@ class TTIFF extends TImageFile
 	/**
 	 * Replaces the EXIF metadata of the TIFF.  A TIFF has no separate EXIF carrier — its
 	 * IFD0 *is* the EXIF IFD0 — so the given metadata is merged into the image: every IFD0
-	 * tag that is not one of the {@see ImageTags} is removed, then the given EXIF's own
-	 * IFD0 metadata tags are copied in, the EXIF, GPS, and Interoperability sub-IFDs as
+	 * tag that is not one of the {@see ImageTags} or the {@see ResolutionTags} is removed,
+	 * then the given EXIF's own IFD0 metadata tags are copied in, its resolution over the
+	 * image's where it states one, the EXIF, GPS, and Interoperability sub-IFDs as
 	 * deep copies so later edits to either side stay apart.  The raster, the carriers
 	 * with their own setters, and the TIFF's other pages are untouched; the given EXIF's
 	 * IFD1 thumbnail is not copied, since a TIFF's IFD1 is its next page.  A copied value
@@ -130,7 +145,7 @@ class TTIFF extends TImageFile
 	 * that address it from the TIFF header stay valid.
 	 *
 	 * Passing the live document ({@see getEXIF()}) changes nothing, since it was edited in
-	 * place; passing null leaves only the image tags.
+	 * place; passing null leaves only the image tags and the resolution.
 	 * @param ?TEXIF $exif The EXIF metadata, or null to remove it.
 	 */
 	public function setEXIF(?TEXIF $exif): void
@@ -143,8 +158,9 @@ class TTIFF extends TImageFile
 			$this->_exif->setSignature('');
 		}
 		$ifd0 = $this->_exif->getIfd0();
+		$kept = [...self::ImageTags, ...self::ResolutionTags];
 		foreach (array_keys($ifd0->getTags()) as $id) {
-			if (!in_array($id, self::ImageTags, true)) {
+			if (!in_array($id, $kept, true)) {
 				$ifd0->removeTag($id);
 			}
 		}
@@ -233,6 +249,7 @@ class TTIFF extends TImageFile
 		$this->setWidthDirect(is_int($width) ? $width : null);
 		$this->setHeightDirect(is_int($height) ? $height : null);
 		$this->setIptcDirect($this->_exif->getIPTC() ?? $this->_exif->getIRB()?->getIPTC());
+		$this->_iptcBytes = $this->getIptcDirect()?->toBinary(null, false);
 		$icc = $ifd0->getTag(self::ICCTag);
 		if ($icc !== null) {
 			$data = $icc->getValues();
@@ -295,7 +312,10 @@ class TTIFF extends TImageFile
 	}
 
 	/**
-	 * Encodes an image into IFD0's raster tags and strip data.
+	 * Encodes an image into IFD0's raster tags and strip data.  Baseline TIFF requires a
+	 * resolution, so a raster that states none is given 72 pixels an inch, the convention
+	 * for one that is not known; a resolution the file already states is kept, and where
+	 * it states only one axis the other takes the same.
 	 * @param \GdImage|\Imagick $image The source image.
 	 * @param int $compression A Compression* constant.
 	 */
@@ -353,6 +373,18 @@ class TTIFF extends TImageFile
 		$offsets = $ifd0->setTagValues(273, TTIFFDataType::ULong, [0]);
 		$ifd0->setTagValues(279, TTIFFDataType::ULong, [strlen($strip)]);
 		$offsets->setExternalData([$strip]);
+
+		$x = $ifd0->getTag(282)?->getValues();
+		$y = $ifd0->getTag(283)?->getValues();
+		if (($x ?? $y) === null) {
+			$ifd0->setTagValues(296, TTIFFDataType::UShort, [2]);   // inches
+		}
+		if ($x === null) {
+			$ifd0->setTagValues(282, TTIFFDataType::URational, $y ?? [[72, 1]]);
+		}
+		if ($y === null) {
+			$ifd0->setTagValues(283, TTIFFDataType::URational, $x ?? [[72, 1]]);
+		}
 	}
 
 	/**
@@ -464,12 +496,35 @@ class TTIFF extends TImageFile
 		return new TFreeSpaceStream(TStream::fromString($bytes), $this->getReservedSpaces());
 	}
 
+	/**
+	 * Writes the IPTC record set into the file's structure when it is not the one the file
+	 * was read with.  An unchanged set is left wherever the file kept it -- tag 33723, the
+	 * Photoshop resources, or both -- in the bytes and the type it had.  A changed one goes
+	 * to tag 33723 and, where the Photoshop resources hold a copy, into that as well, so the
+	 * file never carries two that disagree.
+	 */
+	protected function syncIptc(): void
+	{
+		$iptc = $this->getIptcDirect();
+		$bytes = $iptc?->toBinary(null, false);
+		if ($bytes === $this->_iptcBytes) {
+			return;
+		}
+		$this->_iptcBytes = $bytes;
+		$this->_exif->setIPTC($iptc);
+		$irb = $this->_exif->getIRB();
+		if ($irb?->getResource(TPhotoshopResource::IptcNaa) !== null) {
+			$irb->setIPTC($iptc);
+			$this->_exif->setIRB($irb);
+		}
+	}
+
 	protected function compose(): string
 	{
 		if ($this->_exif === null) {
 			return $this->getBytesDirect();
 		}
-		$this->_exif->setIPTC($this->getIptcDirect());
+		$this->syncIptc();
 		$icc = $this->getICCProfileDirect();
 		if ($icc === null) {
 			$this->_exif->getIfd0()->removeTag(self::ICCTag);
@@ -494,7 +549,7 @@ class TTIFF extends TImageFile
 		if ($this->_exif === null) {
 			return $this->writeTo($target);
 		}
-		$this->_exif->setIPTC($this->getIptcDirect());
+		$this->syncIptc();
 		$icc = $this->getICCProfileDirect();
 		if ($icc === null) {
 			$this->_exif->getIfd0()->removeTag(self::ICCTag);

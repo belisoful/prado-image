@@ -196,15 +196,16 @@ class TPhotoshopIRB extends TComponent implements \IteratorAggregate, \Countable
 	}
 
 	/**
-	 * Sets (or removes, when null) the embedded IPTC record set.
+	 * Sets (or removes, when null) the embedded IPTC record set.  A resource already
+	 * holding those very bytes is left as it is, name and all.
 	 * @param ?TIPTC $iptc The IPTC, or null to remove the resource.
 	 */
 	public function setIPTC(?TIPTC $iptc): void
 	{
 		if ($iptc === null) {
 			$this->removeResource(TPhotoshopResource::IptcNaa);
-		} else {
-			$this->setResource(new TPhotoshopResource(TPhotoshopResource::IptcNaa, $iptc->toBinary(null, false)));
+		} elseif ($this->getResource(TPhotoshopResource::IptcNaa)?->getData() !== ($data = $iptc->toBinary(null, false))) {
+			$this->setResource(new TPhotoshopResource(TPhotoshopResource::IptcNaa, $data));
 		}
 	}
 

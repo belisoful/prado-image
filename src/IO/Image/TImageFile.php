@@ -81,13 +81,23 @@ abstract class TImageFile extends TComponent implements IPrivacyScrubbable
 	public const BudgetBytesPerPixel = 16;
 
 	/**
+	 * @var int The bytes of a memory budget that allow one byte of a file read whole.
+	 *   Reading a file and writing it back was measured to peak at 3.0 times its length for
+	 *   a JPEG, 4.0 to 4.1 for the other containers, and 4.4 for a GIF of full sub-blocks.
+	 */
+	public const BudgetBytesPerFileByte = 5;
+
+	/**
 	 * @var float The share of PHP's `memory_limit` that is the {@see getMemoryBudget() memory
-	 *   budget} until one is set: half, the rest being the application's and the file's own.
+	 *   budget} until one is set: half, the rest being the application's.
 	 */
 	public const DefaultBudgetShare = 0.5;
 
 	/** @var ?int The part ceiling set at run time, or null for the budget's. */
 	private static ?int $_maxParts = null;
+
+	/** @var ?int The file ceiling set at run time, or null for the budget's. */
+	private static ?int $_maxFileSize = null;
 
 	/**
 	 * @var float|int The memory budget: a number of bytes as an integer, or a share of
@@ -148,10 +158,54 @@ abstract class TImageFile extends TComponent implements IPrivacyScrubbable
 	}
 
 	/**
-	 * Returns the memory budget: the memory the library sizes its three ceilings on
+	 * Returns the file ceiling: the longest file that is read whole.  A file read whole is
+	 * held in memory, then again as the parts it is made of, and a third and fourth time
+	 * while it is written back, so its length is the largest single thing a read costs.
+	 *
+	 * {@see fromFile()}, {@see fromStream()} and {@see fromString()} refuse a longer one,
+	 * and the first two stop reading at the ceiling rather than find out by running out of
+	 * memory.  The lazy readers (`fromStreamLazy()`) hold only a file's structure and leave
+	 * its payloads where they are, so they are not subject to it: they are how a file
+	 * longer than the ceiling is opened and, with {@see streamTo()}, rewritten.
+	 * @return ?int The ceiling in bytes: the one {@see setMaxFileSize() set}, else the
+	 *   {@see getMemoryBudget() memory budget}'s, else null -- a process with no memory limit
+	 *   has no ceiling on the length of a file.
+	 */
+	public static function getMaxFileSize(): ?int
+	{
+		return self::$_maxFileSize ?? self::getBudgetCeiling(self::BudgetBytesPerFileByte);
+	}
+
+	/**
+	 * Sets the file ceiling.  Raise it, with the memory limit, to read a longer file whole.
+	 * @param ?int $bytes The ceiling in bytes, or null to leave it to the
+	 *   {@see getMemoryBudget() memory budget} again.
+	 */
+	public static function setMaxFileSize(?int $bytes): void
+	{
+		self::$_maxFileSize = $bytes;
+	}
+
+	/**
+	 * Refuses a file longer than the {@see getMaxFileSize() file ceiling}.
+	 * @param int $bytes The length of the file, or as much of it as was read.
+	 * @throws TIOException When the length is over the ceiling.
+	 */
+	public static function assertFileSize(int $bytes): void
+	{
+		$ceiling = self::getMaxFileSize();
+		if ($ceiling !== null && $bytes > $ceiling) {
+			throw new TIOException('imagefile_too_long', $ceiling);
+		}
+	}
+
+	/**
+	 * Returns the memory budget: the memory the library sizes its four ceilings on
 	 * untrusted input to.  PHP cannot catch running out of memory, so the library refuses,
 	 * with an exception, what would not fit -- and the budget is what says how much that is:
 	 *
+	 * - the {@see getMaxFileSize() file ceiling} is one byte of a file read whole for every
+	 *   {@see BudgetBytesPerFileByte} bytes,
 	 * - the {@see getMaxParts() part ceiling} is one part for every
 	 *   {@see BudgetBytesPerPart} bytes,
 	 * - the {@see TPNG::getMaxInflatedSize() inflation ceiling} one byte for every
@@ -161,15 +215,16 @@ abstract class TImageFile extends TComponent implements IPrivacyScrubbable
 	 *
 	 * Until one is {@see setMemoryBudget() set} the budget is {@see DefaultBudgetShare half}
 	 * of PHP's `memory_limit`, read each time it is asked for, so the ceilings follow the
-	 * limit the process really runs under.  A process with no memory limit has no budget,
-	 * and the three ceilings are then their fixed defaults ({@see DefaultMaxParts},
-	 * {@see TPNG::MaxInflatedSize}, {@see TImageGraphics::DefaultMaxPixels}).
+	 * limit the process really runs under.  A process with no memory limit has no budget:
+	 * a file may then be any length, and the other three ceilings are their fixed defaults
+	 * ({@see DefaultMaxParts}, {@see TPNG::MaxInflatedSize},
+	 * {@see TImageGraphics::DefaultMaxPixels}).
 	 *
 	 * The ratios are measured peaks with room to spare, not a meter: the limit is
 	 * configuration and nothing watches memory while a file is read, so the same file opens
-	 * or is refused the same way whatever else the application holds.  What no ceiling
-	 * covers is the length of the file itself.  Reading one whole holds it and the rebuilt
-	 * copy in memory, and only the caller decides what to pass in.
+	 * or is refused the same way whatever else the application holds.  Each ceiling is
+	 * sized as though it had the whole budget, which is why the budget is a share of the
+	 * limit and not all of it.
 	 * @return ?int The budget in bytes, or null when there is none.
 	 */
 	public static function getMemoryBudget(): ?int
@@ -291,10 +346,13 @@ abstract class TImageFile extends TComponent implements IPrivacyScrubbable
 	/**
 	 * Creates a reader from a raw byte string.
 	 * @param string $bytes The image bytes.
+	 * @throws TIOException When the bytes are longer than the
+	 *   {@see getMaxFileSize() file ceiling}.
 	 * @return static The parsed image reader.
 	 */
 	public static function fromString(string $bytes): static
 	{
+		self::assertFileSize(strlen($bytes));
 		if (static::class === self::class) {
 			// Called on the abstract base: detect the container from the bytes and open it.
 			$container = self::detect($bytes);
@@ -332,6 +390,8 @@ abstract class TImageFile extends TComponent implements IPrivacyScrubbable
 	 * Creates a reader from a PSR-7 stream or stream resource, reading it in full
 	 * (a seekable stream is rewound first).
 	 * @param mixed $stream The image {@see StreamInterface} or PHP stream resource.
+	 * @throws TIOException When the stream is longer than the
+	 *   {@see getMaxFileSize() file ceiling}.
 	 * @return static The parsed image reader.
 	 */
 	public static function fromStream(mixed $stream): static
@@ -342,22 +402,19 @@ abstract class TImageFile extends TComponent implements IPrivacyScrubbable
 		if ($stream instanceof StreamInterface && $stream->isSeekable()) {
 			$stream->seek(0);
 		}
-		return static::fromString(static::sourceBytes($stream));
+		return static::fromString(static::fileBytes($stream));
 	}
 
 	/**
 	 * Creates a reader from a file path.
 	 * @param string $path The file path.
-	 * @throws TIOException When the file cannot be read.
+	 * @throws TIOException When the file cannot be read, or is longer than the
+	 *   {@see getMaxFileSize() file ceiling}.
 	 * @return static The parsed image reader.
 	 */
 	public static function fromFile(string $path): static
 	{
-		$bytes = @file_get_contents($path);
-		if ($bytes === false) {
-			throw new TIOException('imagefile_unreadable', $path);
-		}
-		return static::fromString($bytes);
+		return static::fromString(static::readFile($path));
 	}
 
 	/**
@@ -493,9 +550,10 @@ abstract class TImageFile extends TComponent implements IPrivacyScrubbable
 	/**
 	 * Writes the rebuilt image to a file.  An existing file is replaced whole or left as
 	 * it was -- see {@see writeFile()} -- so saving over the file that was read cannot
-	 * leave half of one behind.
+	 * leave half of one behind, and where it cannot be replaced that way the save throws
+	 * rather than write over it in place.
 	 * @param string $path The destination file path.
-	 * @throws TIOException When the file cannot be written.
+	 * @throws TIOException When the file cannot be written or replaced.
 	 * @return int The number of bytes written.
 	 */
 	public function save(string $path): int

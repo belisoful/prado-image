@@ -325,7 +325,7 @@ class TFormatEdgeTest extends PHPUnit\Framework\TestCase
 			$jpeg->save('/no-such-directory-for-prado-image/out.jpg');
 			self::fail('an unwritable path was accepted');
 		} catch (TIOException $e) {
-			self::assertSame('imagefile_unwritable', $e->getErrorCode());
+			self::assertSame('imagefile_no_temporary_file', $e->getErrorCode());
 		}
 	}
 

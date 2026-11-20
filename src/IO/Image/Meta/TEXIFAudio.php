@@ -143,7 +143,7 @@ class TEXIFAudio extends TComponent
 	 */
 	public static function fromStream(mixed $stream): static
 	{
-		return static::fromString(static::sourceBytes($stream));
+		return static::fromString(static::fileBytes($stream));
 	}
 
 	/**
@@ -154,11 +154,7 @@ class TEXIFAudio extends TComponent
 	 */
 	public static function fromFile(string $path): static
 	{
-		$bytes = @file_get_contents($path);
-		if ($bytes === false) {
-			throw new TIOException('imagefile_unreadable', $path);
-		}
-		return static::fromString($bytes);
+		return static::fromString(static::readFile($path));
 	}
 
 	/**

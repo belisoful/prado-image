@@ -164,11 +164,7 @@ class TEXIF extends TComponent implements IPrivacyScrubbable
 	 */
 	public static function fromTiffFile(string $path): static
 	{
-		$bytes = @file_get_contents($path);
-		if ($bytes === false) {
-			throw new TIOException('imagefile_unreadable', $path);
-		}
-		return static::fromTiffString($bytes);
+		return static::fromTiffString(static::readFile($path));
 	}
 
 	/**
@@ -629,16 +625,28 @@ class TEXIF extends TComponent implements IPrivacyScrubbable
 	}
 
 	/**
-	 * Sets (or removes, when null) the embedded IPTC record set.
+	 * Sets (or removes, when null) the embedded IPTC record set.  A tag already holding
+	 * those very bytes is left as it is, in the type it was read with.  Otherwise the tag is
+	 * written as LONG, the type Photoshop gave it and the one other software expects: the
+	 * datasets are a stream of bytes all the same, so they are padded with zeros to a whole
+	 * number of four and stored in their own order whatever the byte order of the file.
 	 * @param ?TIPTC $iptc The IPTC, or null to remove the tag.
 	 */
 	public function setIPTC(?TIPTC $iptc): void
 	{
+		$ifd0 = $this->getIfd0();
 		if ($iptc === null) {
-			$this->getIfd0()->removeTag(self::IptcTag);
-		} else {
-			$this->getIfd0()->setTagValues(self::IptcTag, TTIFFDataType::Undefined, $iptc->toBinary(null, false));
+			$ifd0->removeTag(self::IptcTag);
+			return;
 		}
+		$bytes = $iptc->toBinary(null, false);
+		$tag = $ifd0->getTag(self::IptcTag);
+		if ($tag !== null && $this->tagBytes($tag) === $bytes) {
+			return;
+		}
+		$bytes .= str_repeat("\0", -strlen($bytes) & 3);
+		$longs = unpack($this->_tiff->getIsBigEndian() ? 'N*' : 'V*', $bytes);
+		$ifd0->setTagValues(self::IptcTag, TTIFFDataType::ULong, array_values((array) $longs));
 	}
 
 	/**
