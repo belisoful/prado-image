@@ -42,6 +42,18 @@ use Psr\Http\Message\StreamInterface;
  */
 class TWebP extends TImageFile
 {
+	/**
+	 * @var class-string<TImageChunk> The class created for chunks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ChunkClass = TImageChunk::class;
+
+	/**
+	 * @var class-string<TRIFF> The class created for RIFF containers.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const RiffClass = TRIFF::class;
+
 	/** The VP8X flag bit marking an XMP chunk present. */
 	public const Vp8xXmpFlag = 0x04;
 
@@ -136,7 +148,7 @@ class TWebP extends TImageFile
 			return;
 		}
 		$this->ensureVp8x();
-		$this->_riff->setChunkInOrder(new TImageChunk($id, strlen($data), 0, $data), self::ChunkOrder);
+		$this->_riff->setChunkInOrder(new (static::ChunkClass)($id, strlen($data), 0, $data), self::ChunkOrder);
 		$this->setVp8xFlag($flag, true);
 	}
 
@@ -150,7 +162,7 @@ class TWebP extends TImageFile
 		if ($text === null) {
 			return null;
 		}
-		$xmp = \Prado\IO\Image\Meta\TXMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -175,7 +187,7 @@ class TWebP extends TImageFile
 			return null;
 		}
 		try {
-			$exif = \Prado\IO\Image\Meta\TEXIF::fromTiffString($data);
+			$exif = static::ExifClass::fromTiffString($data);
 		} catch (TIOException $e) {
 			return null;
 		}
@@ -247,7 +259,7 @@ class TWebP extends TImageFile
 	 */
 	public function getImage(?string $mode = null): false|\GdImage|\Imagick
 	{
-		return TImageGraphics::decode($this->getBytesDirect(), $mode);
+		return static::GraphicsClass::decode($this->getBytesDirect(), $mode);
 	}
 
 	/**
@@ -259,9 +271,9 @@ class TWebP extends TImageFile
 	 */
 	public function setImage(\GdImage|\Imagick $image, int $quality = 80): void
 	{
-		$bytes = TImageGraphics::encode($image, IImageGraphicsLibrary::FormatWebP, $quality);
+		$bytes = static::GraphicsClass::encode($image, IImageGraphicsLibrary::FormatWebP, $quality);
 		if ($bytes === false) {
-			throw new TIOException('webp_encode_unavailable', TImageGraphics::getModeOf($image));
+			throw new TIOException('webp_encode_unavailable', static::GraphicsClass::getModeOf($image));
 		}
 		$carried = [];
 		foreach (self::MetaChunkFlags as $id => $flag) {
@@ -286,9 +298,9 @@ class TWebP extends TImageFile
 	 */
 	public static function fromImage(\GdImage|\Imagick $image, int $quality = 80): static
 	{
-		$bytes = TImageGraphics::encode($image, IImageGraphicsLibrary::FormatWebP, $quality);
+		$bytes = static::GraphicsClass::encode($image, IImageGraphicsLibrary::FormatWebP, $quality);
 		if ($bytes === false) {
-			throw new TIOException('webp_encode_unavailable', TImageGraphics::getModeOf($image));
+			throw new TIOException('webp_encode_unavailable', static::GraphicsClass::getModeOf($image));
 		}
 		return static::fromString($bytes);
 	}
@@ -307,7 +319,7 @@ class TWebP extends TImageFile
 		$payload = "\x00\x00\x00\x00"
 			. substr(pack('V', $width - 1), 0, 3)
 			. substr(pack('V', $height - 1), 0, 3);
-		$this->_riff->prependChunk(new TImageChunk(TRIFFChunkType::Vp8Extended, strlen($payload), 0, $payload));
+		$this->_riff->prependChunk(new (static::ChunkClass)(TRIFFChunkType::Vp8Extended, strlen($payload), 0, $payload));
 	}
 
 	/**
@@ -356,7 +368,7 @@ class TWebP extends TImageFile
 		if (!$stream instanceof StreamInterface) {
 			throw new TInvalidDataTypeException('streamio_source_invalid', get_debug_type($stream));
 		}
-		$riff = TRIFF::fromStreamLazy($stream, [TRIFFChunkType::Vp8, TRIFFChunkType::Vp8Lossless, TRIFFChunkType::AnimationFrame, TRIFFChunkType::Alpha]);
+		$riff = static::RiffClass::fromStreamLazy($stream, [TRIFFChunkType::Vp8, TRIFFChunkType::Vp8Lossless, TRIFFChunkType::AnimationFrame, TRIFFChunkType::Alpha]);
 		if ($riff->getFormType() !== 'WEBP') {
 			throw new TIOException('webp_invalid', 'RIFF form type is not WEBP');
 		}
@@ -405,7 +417,7 @@ class TWebP extends TImageFile
 	 */
 	protected function parse(): void
 	{
-		$riff = TRIFF::fromString($this->getBytesDirect());
+		$riff = static::RiffClass::fromString($this->getBytesDirect());
 		if ($riff->getFormType() !== 'WEBP') {
 			throw new TIOException('webp_invalid', 'RIFF form type is not WEBP');
 		}

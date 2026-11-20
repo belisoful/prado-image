@@ -48,6 +48,36 @@ use Prado\TComponent;
  */
 class TFileInfo extends TComponent implements \ArrayAccess
 {
+	/**
+	 * @var class-string<TEXIF> The class created for EXIF metadata.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ExifClass = TEXIF::class;
+
+	/**
+	 * @var class-string<TIPTC> The class created for IPTC record sets.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const IptcClass = TIPTC::class;
+
+	/**
+	 * @var class-string<TPhotoshopIRB> The class created for Photoshop resource blocks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const IrbClass = TPhotoshopIRB::class;
+
+	/**
+	 * @var class-string<TPhotoshopResource> The class created for Photoshop resources.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ResourceClass = TPhotoshopResource::class;
+
+	/**
+	 * @var class-string<TXMP> The class created for XMP packets.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const XmpClass = TXMP::class;
+
 	/** The unknown copyright status. */
 	public const CopyrightUnknown = 'Unknown';
 
@@ -238,10 +268,10 @@ class TFileInfo extends TComponent implements \ArrayAccess
 	 */
 	public function applyTo(TJPEG $jpeg): void
 	{
-		$exif = $jpeg->getEXIF() ?? new TEXIF();
-		$xmp = $jpeg->getXMP() ?? TXMP::blank();
-		$iptc = $jpeg->getIPTC() ?? new TIPTC();
-		$irb = $jpeg->getPhotoshopIRB() ?? new TPhotoshopIRB();
+		$exif = $jpeg->getEXIF() ?? new (static::ExifClass)();
+		$xmp = $jpeg->getXMP() ?? static::XmpClass::blank();
+		$iptc = $jpeg->getIPTC() ?? new (static::IptcClass)();
+		$irb = $jpeg->getPhotoshopIRB() ?? new (static::IrbClass)();
 
 		// IPTC datasets (in the IRB) with their length limits.
 		foreach (self::IptcMap as $field => [$tag, $limit]) {
@@ -300,7 +330,7 @@ class TFileInfo extends TComponent implements \ArrayAccess
 
 		// IRB resources.
 		if ($status === self::Copyrighted || $status === self::PublicDomain) {
-			$irb->setResource(new TPhotoshopResource(TPhotoshopResource::CopyrightFlag, $status === self::Copyrighted ? "\x01" : "\x00"));
+			$irb->setResource(new (static::ResourceClass)(TPhotoshopResource::CopyrightFlag, $status === self::Copyrighted ? "\x01" : "\x00"));
 		} else {
 			$irb->removeResource(TPhotoshopResource::CopyrightFlag);
 		}
@@ -308,7 +338,7 @@ class TFileInfo extends TComponent implements \ArrayAccess
 		if ($url === null) {
 			$irb->removeResource(TPhotoshopResource::Url);
 		} else {
-			$irb->setResource(new TPhotoshopResource(TPhotoshopResource::Url, $url));
+			$irb->setResource(new (static::ResourceClass)(TPhotoshopResource::Url, $url));
 		}
 		$iptc[TIPTCTags::ApplicationRecordVersion] ??= 4;
 

@@ -26,6 +26,12 @@ use Prado\TComponent;
  */
 class TTIFFIfd extends TComponent implements \IteratorAggregate, \Countable
 {
+	/**
+	 * @var class-string<TTIFFTag> The class created for TIFF fields.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const TagClass = TTIFFTag::class;
+
 	/** @var array<int, TTIFFTag> The fields, keyed by tag id. */
 	private array $_tags = [];
 
@@ -68,7 +74,7 @@ class TTIFFIfd extends TComponent implements \IteratorAggregate, \Countable
 	 */
 	public function setTagValues(int $id, int $type, array|string $values): TTIFFTag
 	{
-		$tag = new TTIFFTag($id, $type, $values);
+		$tag = new (static::TagClass)($id, $type, $values);
 		$this->setTag($tag);
 		return $tag;
 	}

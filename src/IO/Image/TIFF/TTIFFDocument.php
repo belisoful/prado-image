@@ -48,6 +48,18 @@ class TTIFFDocument extends TComponent
 {
 	use \Prado\IO\Image\TStreamIOTrait;
 
+	/**
+	 * @var class-string<TTIFFIfd> The class created for TIFF directories.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const IfdClass = TTIFFIfd::class;
+
+	/**
+	 * @var class-string<TTIFFTag> The class created for TIFF fields.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const TagClass = TTIFFTag::class;
+
 	/** The TIFF magic number following the byte-order mark. */
 	public const Magic = 42;
 
@@ -295,7 +307,7 @@ class TTIFFDocument extends TComponent
 		}
 		$next = $this->readULong($table, $count * 12);
 		$this->countEntries($count);
-		$ifd = new TTIFFIfd();
+		$ifd = new (static::IfdClass)();
 		for ($i = 0; $i < $count; $i++) {
 			$entry = $i * 12;
 			$tagId = $this->readUShort($table, $entry);
@@ -323,7 +335,7 @@ class TTIFFDocument extends TComponent
 					continue;
 				}
 			}
-			$tag = new TTIFFTag($tagId, $type, TTIFFDataType::unpack($type, $data, $this->getIsBigEndian()));
+			$tag = new (static::TagClass)($tagId, $type, TTIFFDataType::unpack($type, $data, $this->getIsBigEndian()));
 			$tag->setOffset($valueOffset);
 			if (in_array($tagId, $this->_subIfdTags, true) && $depth < static::MaxIfds) {
 				$subOffset = (int) ($tag->getValues()[0] ?? 0);
@@ -553,7 +565,7 @@ class TTIFFDocument extends TComponent
 			$count = max(0, intdiv($len - $offset - 2, 12));
 		}
 		$this->countEntries($count);
-		$ifd = new TTIFFIfd();
+		$ifd = new (static::IfdClass)();
 		for ($i = 0; $i < $count; $i++) {
 			$entry = $offset + 2 + $i * 12;
 			$tagId = $this->readUShort($bytes, $entry);
@@ -575,7 +587,7 @@ class TTIFFDocument extends TComponent
 				}
 				$data = substr($bytes, $valueOffset, $byteSize);
 			}
-			$tag = new TTIFFTag($tagId, $type, TTIFFDataType::unpack($type, $data, $this->_bigEndian));
+			$tag = new (static::TagClass)($tagId, $type, TTIFFDataType::unpack($type, $data, $this->_bigEndian));
 			$tag->setOffset($valueOffset);
 			if (in_array($tagId, $this->_subIfdTags, true) && $depth < static::MaxIfds) {
 				$subOffset = (int) ($tag->getValues()[0] ?? 0);
@@ -617,12 +629,20 @@ class TTIFFDocument extends TComponent
 	 */
 	public function toBinary(): string
 	{
-		[$writes, $total] = $this->layoutWrites();
-		$out = str_repeat("\0", $total);
+		// The blocks in the order of their offsets, with zeros between, joined once -- the
+		// bytes {@see streamTo()} writes.  Placing each into a buffer of the whole length
+		// copied that buffer for every block.
+		[$writes] = $this->layoutWrites();
+		usort($writes, static fn (array $a, array $b): int => $a[0] <=> $b[0]);
+		$parts = [];
+		$position = 0;
 		foreach ($writes as [$offset, $block]) {
-			$this->writeBytes($out, $offset, is_string($block) ? $block : $block->read());
+			$bytes = is_string($block) ? $block : $block->read();
+			$parts[] = str_repeat("\0", max(0, $offset - $position));   // zero-fill the gap
+			$parts[] = $bytes;
+			$position = max($position, $offset) + strlen($bytes);
 		}
-		return $out;
+		return implode('', $parts);
 	}
 
 	/**
@@ -932,17 +952,6 @@ class TTIFFDocument extends TComponent
 		foreach ($layout['subs'] as $sub) {
 			$this->collectIfdWrites($writes, $sub, 0);
 		}
-	}
-
-	/**
-	 * Overwrites bytes in the output buffer.
-	 * @param string &$out The output buffer.
-	 * @param int $offset The write position.
-	 * @param string $bytes The bytes to write.
-	 */
-	protected function writeBytes(string &$out, int $offset, string $bytes): void
-	{
-		$out = substr_replace($out, $bytes, $offset, strlen($bytes));
 	}
 
 	/**

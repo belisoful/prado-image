@@ -12,9 +12,10 @@ namespace Prado\IO\Image\Meta;
 
 use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\Exceptions\TInvalidDataValueException;
-use Prado\IO\TStream;
 use Prado\IO\Image\TImageGraphics;
 use Prado\IO\Image\TImageGraphicsMode;
+use Prado\IO\TStream;
+use Prado\Prado;
 use Prado\TComponent;
 use Psr\Http\Message\StreamInterface;
 
@@ -37,6 +38,12 @@ use Psr\Http\Message\StreamInterface;
  */
 class TJFIF extends TComponent
 {
+	/**
+	 * @var class-string<TImageGraphics> The graphics facade this class draws through.
+	 *   A subclass names its own here to have that used instead.
+	 */
+	public const GraphicsClass = TImageGraphics::class;
+
 	public const IDENTIFIER = "JFIF\0";
 	public const JFXX_IDENTIFIER = "JFXX\0";
 	public const VERSION_11 = 1;
@@ -133,7 +140,7 @@ class TJFIF extends TComponent
 			return false;
 		}
 		$fields = unpack('Cmaj/Cmin/Cunits/nxd/nyd/Csx/Csy', substr($bytes, 5, 9));
-		$jfif = new TJFIF();
+		$jfif = Prado::createComponent(static::class);
 		$jfif->_versionMajor = $fields['maj'];
 		$jfif->_versionMinor = $fields['min'];
 		$jfif->_units = $fields['units'];
@@ -299,7 +306,7 @@ class TJFIF extends TComponent
 		if (!$this->hasImage()) {
 			return false;
 		}
-		return TImageGraphics::fromRgbPixels($this->getThumbnail(), $this->getXThumbnail(), $this->getYThumbnail(), $mode);
+		return static::GraphicsClass::fromRgbPixels($this->getThumbnail(), $this->getXThumbnail(), $this->getYThumbnail(), $mode);
 	}
 
 	/**
@@ -313,13 +320,13 @@ class TJFIF extends TComponent
 			$this->clearThumbnail();
 			return;
 		}
-		[$sx, $sy] = TImageGraphics::getSize($image);
+		[$sx, $sy] = static::GraphicsClass::getSize($image);
 		if ($sx > 255 || $sy > 255) {
 			throw new TInvalidDataValueException('jfif_thumbnail_over_max', $sx, $sy);
 		}
 		$this->_xThumbnail = $sx;
 		$this->_yThumbnail = $sy;
-		$this->_thumbnail = TImageGraphics::rgbPixels($image);
+		$this->_thumbnail = static::GraphicsClass::rgbPixels($image);
 	}
 
 	/**

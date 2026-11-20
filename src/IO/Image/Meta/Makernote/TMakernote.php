@@ -46,6 +46,25 @@ use Prado\TComponent;
  */
 class TMakernote extends TComponent
 {
+	/**
+	 * @var class-string<TTIFFDocument> The class created for TIFF documents.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const TiffDocumentClass = TTIFFDocument::class;
+
+	/**
+	 * @var array<string, class-string<TMakernote>> The classes decoding the makers that have
+	 *   one of their own, by maker name.  A subclass names its own here; a class
+	 *   {@see registerMakerClass() registered} at run time comes first.
+	 */
+	public const MakerClasses = [
+		'Canon' => TCanonMakernote::class,
+		'Konica Minolta' => TKonicaMinoltaMakernote::class,
+	];
+
+	/** @var class-string<TMakernote> The class decoding every other maker. */
+	public const GenericClass = self::class;
+
 	/** @var array<string, string> The maker => subclass registry for maker-specific decoding. */
 	private static array $_makerClasses = [];
 
@@ -94,11 +113,7 @@ class TMakernote extends TComponent
 	 */
 	protected static function makerClass(string $maker): string
 	{
-		return self::$_makerClasses[$maker] ?? match ($maker) {
-			'Canon' => TCanonMakernote::class,
-			'Konica Minolta' => TKonicaMinoltaMakernote::class,
-			default => self::class,
-		};
+		return self::$_makerClasses[$maker] ?? static::MakerClasses[$maker] ?? static::GenericClass;
 	}
 
 	/**
@@ -233,13 +248,13 @@ class TMakernote extends TComponent
 			'II' => false,
 			default => $bigEndian,
 		};
-		$reader = new TTIFFDocument();
+		$reader = new (static::TiffDocumentClass)();
 		$reader->setIsBigEndian($order);
 
 		if ($variant['embeddedTiffHeader'] ?? false) {
 			// Nikon Type 3: a complete TIFF structure follows the signature.
 			try {
-				$inner = TTIFFDocument::fromString(substr($note, $variant['signatureLength']), []);
+				$inner = static::TiffDocumentClass::fromString(substr($note, $variant['signatureLength']), []);
 				$inner->setIsBigEndian($inner->getIsBigEndian());
 				$this->_ifd = $inner->getIfd(0);
 				$this->_warnings = array_merge($this->_warnings, $inner->getWarnings());
@@ -288,7 +303,7 @@ class TMakernote extends TComponent
 		$block = substr($bytes, $tag->getOffset(), $tag->getCount());
 		foreach ($spec['signatures'] as $signature) {
 			if (str_starts_with($block, $signature)) {
-				$reader = new TTIFFDocument();
+				$reader = new (static::TiffDocumentClass)();
 				$reader->setIsBigEndian(($spec['byteOrder'] ?? 'MM') === 'MM');
 				[$sub] = $reader->readIfdAt($block, $spec['ifdOffset'], 0, $spec['hasNextIfdPointer'] ?? false);
 				if ($sub !== null) {

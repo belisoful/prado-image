@@ -37,6 +37,7 @@ use Prado\IO\Util\TBitWriter;
  * ```
  *
  * @author Brad Anderson <belisoful@icloud.com>
+ * @phpstan-consistent-constructor
  */
 class TCCITTFaxCompressor implements ICompressor
 {
@@ -172,7 +173,7 @@ class TCCITTFaxCompressor implements ICompressor
 	 */
 	public static function compress(string $data, int $columns = 1728, int $mode = self::Group4): string
 	{
-		return (new self($columns, $mode))->encode($data);
+		return (new static($columns, $mode))->encode($data);
 	}
 
 	/**
@@ -186,7 +187,7 @@ class TCCITTFaxCompressor implements ICompressor
 	 */
 	public static function decompress(string $data, int $columns = 1728, int $mode = self::Group4, ?int $rows = null): string
 	{
-		return (new self($columns, $mode))->decode($data, $rows);
+		return (new static($columns, $mode))->decode($data, $rows);
 	}
 
 	/**

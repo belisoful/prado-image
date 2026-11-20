@@ -4,9 +4,9 @@ use Prado\Exceptions\TInvalidDataValueException;
 use Prado\IO\Image\IImageGraphicsLibrary;
 use Prado\IO\Image\Meta\TIPTC;
 use Prado\IO\Image\Meta\TIPTCTags;
+use Prado\IO\Image\TConformanceCategory;
 use Prado\IO\Image\TImageFile;
 use Prado\IO\Image\TImageGraphics;
-use Prado\IO\Image\TImageGraphicsMode;
 use Prado\IO\Image\TPhotoshop8BIM;
 use Prado\IO\Image\TPrivacyCategory;
 use Prado\IO\TStream;
@@ -336,12 +336,12 @@ class TIPTCTest extends PHPUnit\Framework\TestCase
 		imageDestroy($image);
 	}
 
-	public function testValidate()
+	public function testConformCompletesTheEnvelopeAndTheRecordVersions()
 	{
 		$this->obj[TIPTCTags::ApplicationRecordVersion] = 4;
 		$this->obj[TIPTCTags::NewsPhotoVersion] = 4;
 		self::assertEquals(3, count($this->obj));
-		$this->obj->validate();
+		$this->obj->conform(TConformanceCategory::All);
 		self::assertEquals(7, count($this->obj));
 		self::assertEquals(false, $this->obj->contains(TIPTCTags::ApplicationRecordVersion));
 		self::assertEquals(false, $this->obj->contains(TIPTCTags::NewsPhotoVersion));
@@ -363,7 +363,7 @@ class TIPTCTest extends PHPUnit\Framework\TestCase
 		$this->obj[TIPTCTags::ServiceIdentifier] = '0123456789';
 		$this->obj[TIPTCTags::DateSent] = '19991231';
 		$envelope = $this->obj[TIPTCTags::EnvelopeNumber] = str_pad(crc32($this->obj[TIPTCTags::ServiceIdentifier] . $this->obj[TIPTCTags::DateSent]) % 100000000, 8, '0', STR_PAD_LEFT);
-		$this->obj->validate();
+		$this->obj->conform(TConformanceCategory::All);
 		self::assertEquals(true, $this->obj->contains(TIPTCTags::ApplicationRecordVersion));
 		self::assertEquals(true, $this->obj->contains(TIPTCTags::NewsPhotoVersion));
 
@@ -378,7 +378,7 @@ class TIPTCTest extends PHPUnit\Framework\TestCase
 		self::assertEquals($envelope, $this->obj[TIPTCTags::EnvelopeNumber]);
 
 		unset($this->obj[TIPTCTags::IPTCPictureNumber]);
-		$this->obj->validate();
+		$this->obj->conform(TConformanceCategory::All);
 		self::assertEquals(true, $this->obj->contains(TIPTCTags::ApplicationRecordVersion));
 		self::assertEquals(false, $this->obj->contains(TIPTCTags::NewsPhotoVersion));
 	}
@@ -947,7 +947,7 @@ class TIPTCTest extends PHPUnit\Framework\TestCase
 		$property = new ReflectionProperty(TImageGraphics::class, '_libraries');
 		$property->setAccessible(true);
 		$saved = $property->getValue();
-		$property->setValue(null, [TImageGraphicsMode::GD => $library] + $saved);
+		$property->setValue(null, [TImageGraphics::GdLibraryClass => $library] + $saved);
 		try {
 			$callback();
 		} finally {
@@ -1154,7 +1154,7 @@ class TIPTCTest extends PHPUnit\Framework\TestCase
 		self::assertFalse($iptc->contains(TIPTCTags::DateSent));
 
 		// Completing the set is still there for whoever asks for it...
-		$iptc->validate();
+		$iptc->conform(TConformanceCategory::All);
 		self::assertTrue($iptc->contains(TIPTCTags::DateSent));
 		self::assertTrue($iptc->contains(TIPTCTags::EnvelopeNumber));
 

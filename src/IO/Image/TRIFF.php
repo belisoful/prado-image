@@ -51,6 +51,18 @@ class TRIFF extends TComponent
 {
 	use TStreamIOTrait;
 
+	/**
+	 * @var class-string<TImageChunk> The class created for chunks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ChunkClass = TImageChunk::class;
+
+	/**
+	 * @var class-string<TRIFFList> The class created for RIFF lists.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ListClass = TRIFFList::class;
+
 	/** The container signatures this class reads; the first is the ordinary one. */
 	public const Signatures = [
 		TRIFFChunkType::Riff,
@@ -153,15 +165,15 @@ class TRIFF extends TComponent
 				$stream->seek($start + 8); // the list type was only peeked at
 			}
 			if (in_array($id, $deferTypes, true) || ($isList && in_array($qualified, $deferTypes, true))) {
-				$riff->_chunks[] = TImageChunk::deferred($id, $size, $start + 8, $stream, $start, $whole);
+				$riff->_chunks[] = static::ChunkClass::deferred($id, $size, $start + 8, $stream, $start, $whole);
 			} else {
 				$payload = TStreamHelper::copyToString($stream, $size);
 				if ($id === TRIFFChunkType::DataSize64) {
 					$sizes64 = self::readSize64Chunk($payload);   // the first chunk sizes the rest
 				}
 				$chunk = $isList
-					? new TRIFFList($id, $size, $start + 8, $payload, 0, $big)
-					: new TImageChunk($id, $size, $start + 8, $payload);
+					? new (static::ListClass)($id, $size, $start + 8, $payload, 0, $big)
+					: new (static::ChunkClass)($id, $size, $start + 8, $payload);
 				if ($chunk instanceof TRIFFList) {
 					$chunk->sharePartCount($count, $walked);
 				}
@@ -404,15 +416,18 @@ class TRIFF extends TComponent
 	{
 		$big = $this->getIsBigEndian();
 		$this->updateSize64();
-		$body = $this->getFormType();
+		// Gathered and joined once, so no chunk is copied to its header and again to the file.
+		$parts = [$this->_signature, '', $this->getFormType()];
+		$length = strlen($parts[2]);
 		foreach ($this->getChunks() as $chunk) {
 			$data = $chunk->getData();
-			$body .= $chunk->getType() . self::packSize($this->storedSize($chunk->getType(), strlen($data)), $big) . $data;
-			if (strlen($data) & 1) {
-				$body .= "\0"; // pad to an even length
-			}
+			$parts[] = $chunk->getType() . self::packSize($this->storedSize($chunk->getType(), strlen($data)), $big);
+			$parts[] = $data;
+			$parts[] = str_repeat("\0", strlen($data) & 1);   // pad to an even length
+			$length += 8 + strlen($data) + (strlen($data) & 1);
 		}
-		return $this->_signature . self::packSize($this->storedSize('', strlen($body)), $big) . $body;
+		$parts[1] = self::packSize($this->storedSize('', $length), $big);
+		return implode('', $parts);
 	}
 
 	/**
@@ -509,11 +524,11 @@ class TRIFF extends TComponent
 			$payload = substr($bytes, $i + 8, max(0, min($size, $end - $i - 8)));
 			TImageFile::assertPartCount(++$count, $total);
 			if ($id === TRIFFChunkType::RiffList && strlen($payload) >= 4 && $depth < TRIFFList::MaxDepth) {
-				$list = new TRIFFList($id, $size, $origin + $i + 8, $payload, $depth, $bigEndian);
+				$list = new (static::ListClass)($id, $size, $origin + $i + 8, $payload, $depth, $bigEndian);
 				$list->sharePartCount($count, $total);
 				$chunks[] = $list;
 			} else {
-				$chunks[] = new TImageChunk($id, $size, $origin + $i + 8, $payload);
+				$chunks[] = new (static::ChunkClass)($id, $size, $origin + $i + 8, $payload);
 			}
 			$i += 8 + $size + ($size & 1); // payload padded to an even length
 		}

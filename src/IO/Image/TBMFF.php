@@ -58,6 +58,18 @@ use Prado\IO\Image\Meta\TXMP;
  */
 class TBMFF extends TImageFile
 {
+	/**
+	 * @var class-string<TBMFFFileBox> The class created for boxes.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const BoxClass = TBMFFFileBox::class;
+
+	/**
+	 * @var class-string<TBMFFItem> The class created for meta items.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ItemClass = TBMFFItem::class;
+
 	/** The file-type box, whose brand says which flavour of the format this is. */
 	public const FileTypeBox = 'ftyp';
 
@@ -368,7 +380,7 @@ class TBMFF extends TImageFile
 			$home[0]->setPayload(substr_replace($home[0]->getPayload(), str_repeat("\0", $was), $home[1], $was));
 		}
 		$iloc->setPayload($item->writeLocation($iloc->getPayload(), $offset, strlen($data)));
-		$this->_boxes[] = new TBMFFFileBox(self::MediaDataBox, $data);
+		$this->_boxes[] = new (static::BoxClass)(self::MediaDataBox, $data);
 	}
 
 	/**
@@ -407,7 +419,7 @@ class TBMFF extends TImageFile
 		if ($item === null) {
 			// An entry describes its item in sixteen bits, so a file already holding 65535
 			// items has no id left to give.
-			$this->setBoxes(TBMFFFileBox::parseBoxes($before));
+			$this->setBoxes(static::BoxClass::parseBoxes($before));
 			throw new TIOException('bmff_item_id_too_wide', $id);
 		}
 		$this->setItemData($item, $data);
@@ -486,7 +498,7 @@ class TBMFF extends TImageFile
 		if ($text === null) {
 			return null;
 		}
-		$xmp = TXMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -516,7 +528,7 @@ class TBMFF extends TImageFile
 			return null;
 		}
 		try {
-			$exif = TEXIF::fromTiffString($tiff);
+			$exif = static::ExifClass::fromTiffString($tiff);
 		} catch (TIOException $e) {
 			return null;
 		}
@@ -595,7 +607,7 @@ class TBMFF extends TImageFile
 				}
 			}
 			if ($value !== null) {
-				$children[] = new TBMFFFileBox($type, pack('n', strlen($value)) . pack('n', $language) . $value);
+				$children[] = new (static::BoxClass)($type, pack('n', strlen($value)) . pack('n', $language) . $value);
 			}
 			$udta->setChildren($children);
 		});
@@ -611,7 +623,7 @@ class TBMFF extends TImageFile
 	{
 		$tags = [];
 		foreach ($this->getItemListBox()?->getChildren() ?? [] as $key) {
-			foreach (TBMFFFileBox::parseBoxes($key->getPayload()) as $data) {
+			foreach (static::BoxClass::parseBoxes($key->getPayload()) as $data) {
 				if ($data->getType() !== self::DataBox || strlen($data->getPayload()) < 8) {
 					continue;
 				}
@@ -638,8 +650,8 @@ class TBMFF extends TImageFile
 			$ilst = $this->requireItemListBox();
 			$children = array_values(array_filter($ilst->getChildren(), fn ($k) => $k->getType() !== $key));
 			if ($value !== null) {
-				$data = new TBMFFFileBox(self::DataBox, pack('N', self::TextTypeIndicator) . pack('N', 0) . $value);
-				$children[] = new TBMFFFileBox($key, $data->toBinary());
+				$data = new (static::BoxClass)(self::DataBox, pack('N', self::TextTypeIndicator) . pack('N', 0) . $value);
+				$children[] = new (static::BoxClass)($key, $data->toBinary());
 			}
 			$ilst->setChildren($children);
 		});
@@ -759,7 +771,7 @@ class TBMFF extends TImageFile
 			if ($item === null) {
 				throw new TIOException('bmff_icc_no_primary_item');
 			}
-			$ipco->addChild(new TBMFFFileBox(self::ColourBox, self::ColourTypeProfile . $profile));
+			$ipco->addChild(new (static::BoxClass)(self::ColourBox, self::ColourTypeProfile . $profile));
 			$this->associateProperty($iprp, $item, count($ipco->getChildren()));
 		});
 	}
@@ -784,11 +796,12 @@ class TBMFF extends TImageFile
 	 */
 	protected function compose(): string
 	{
-		$bytes = '';
+		$parts = [];
 		foreach ($this->_boxes as $box) {
-			$bytes .= $box->toBinary();
+			array_push($parts, ...$box->toParts());
 		}
-		return $bytes . $this->_remainder;
+		$parts[] = $this->_remainder;
+		return implode('', $parts);
 	}
 
 	/**
@@ -801,7 +814,7 @@ class TBMFF extends TImageFile
 		if (!self::isBMFF($bytes)) {
 			throw new TIOException('bmff_invalid', 'missing a leading ftyp box');
 		}
-		[$this->_boxes, $this->_remainder] = TBMFFFileBox::parseSequence($bytes);
+		[$this->_boxes, $this->_remainder] = static::BoxClass::parseSequence($bytes);
 	}
 
 	/**
@@ -833,7 +846,7 @@ class TBMFF extends TImageFile
 				break;
 			}
 		}
-		$replacement = $payload === null ? null : TBMFFFileBox::uuidBox($userType, $payload);
+		$replacement = $payload === null ? null : static::BoxClass::uuidBox($userType, $payload);
 		if ($index === null) {
 			if ($replacement !== null && !$this->placeInFreeSpace($replacement)) {
 				$this->_boxes[] = $replacement;   // the end is past every offset in the file
@@ -934,7 +947,7 @@ class TBMFF extends TImageFile
 	 */
 	protected function freeBox(int $payload): TBMFFFileBox
 	{
-		return new TBMFFFileBox(self::FreeBox, str_repeat("\0", $payload));
+		return new (static::BoxClass)(self::FreeBox, str_repeat("\0", $payload));
 	}
 
 	/**
@@ -967,7 +980,7 @@ class TBMFF extends TImageFile
 		$countWidth = $version === 0 ? 2 : 4;
 		$pos = 4 + $countWidth;
 		$items = [];
-		foreach (TBMFFFileBox::parseBoxes(substr($payload, $pos)) as $entry) {
+		foreach (static::BoxClass::parseBoxes(substr($payload, $pos)) as $entry) {
 			if ($entry->getType() !== self::ItemInfoEntryBox) {
 				continue;
 			}
@@ -996,7 +1009,7 @@ class TBMFF extends TImageFile
 			? (int) unpack('n', substr($payload, 4, 2))[1]
 			: (int) unpack('N', substr($payload, 4, 4))[1];
 		$pos = 4 + $idWidth + 2;
-		$item = new TBMFFItem($id, substr($payload, $pos, 4));
+		$item = new (static::ItemClass)($id, substr($payload, $pos, 4));
 		$pos += 4;
 		$item->setName($this->readCString($payload, $pos));
 		if ($item->getType() === TBMFFItem::MimeType) {
@@ -1234,7 +1247,7 @@ class TBMFF extends TImageFile
 		}
 		$udta = $moov->getChild(self::UserDataBox);
 		if ($udta === null) {
-			$udta = new TBMFFFileBox(self::UserDataBox);
+			$udta = new (static::BoxClass)(self::UserDataBox);
 			$udta->setChildren([]);
 			$moov->addChild($udta);
 		}
@@ -1252,13 +1265,13 @@ class TBMFF extends TImageFile
 		$udta = $this->requireUserDataBox();
 		$meta = $udta->getChild(self::MetaBox);
 		if ($meta === null) {
-			$meta = new TBMFFFileBox(self::MetaBox);
-			$meta->setChildren([new TBMFFFileBox(self::HandlerBox, str_repeat("\0", 8) . 'mdir' . 'appl' . str_repeat("\0", 9))]);
+			$meta = new (static::BoxClass)(self::MetaBox);
+			$meta->setChildren([new (static::BoxClass)(self::HandlerBox, str_repeat("\0", 8) . 'mdir' . 'appl' . str_repeat("\0", 9))]);
 			$udta->addChild($meta);
 		}
 		$ilst = $meta->getChild(self::ItemListBox);
 		if ($ilst === null) {
-			$ilst = new TBMFFFileBox(self::ItemListBox);
+			$ilst = new (static::BoxClass)(self::ItemListBox);
 			$ilst->setChildren([]);
 			$meta->addChild($ilst);
 		}
@@ -1287,7 +1300,7 @@ class TBMFF extends TImageFile
 			return;
 		}
 		if (!$this->holdMediaInPlace($delta)) {
-			$this->setBoxes(TBMFFFileBox::parseBoxes($before));   // undo rather than corrupt
+			$this->setBoxes(static::BoxClass::parseBoxes($before));   // undo rather than corrupt
 			throw new TIOException('bmff_movie_resize_unabsorbable', $delta);
 		}
 		$this->_items = null;
@@ -1389,13 +1402,13 @@ class TBMFF extends TImageFile
 		}
 		$iprp = $meta->getChild(self::ItemPropertiesBox);
 		if ($iprp === null) {
-			$iprp = new TBMFFFileBox(self::ItemPropertiesBox);
+			$iprp = new (static::BoxClass)(self::ItemPropertiesBox);
 			$iprp->setChildren([]);
 			$meta->addChild($iprp);
 		}
 		$ipco = $iprp->getChild(self::ItemPropertyContainerBox);
 		if ($ipco === null) {
-			$ipco = new TBMFFFileBox(self::ItemPropertyContainerBox);
+			$ipco = new (static::BoxClass)(self::ItemPropertyContainerBox);
 			$ipco->setChildren([]);
 			$iprp->addChild($ipco);
 		}
@@ -1469,7 +1482,7 @@ class TBMFF extends TImageFile
 		if ($this->tradeColourIntoPadding($ipco, $colr, $profile, $was) && strlen($meta->toBinary()) === $was) {
 			return true;
 		}
-		$this->setBoxes(TBMFFFileBox::parseBoxes($before));
+		$this->setBoxes(static::BoxClass::parseBoxes($before));
 		return false;
 	}
 
@@ -1496,7 +1509,7 @@ class TBMFF extends TImageFile
 			if ($this->trailingFreeProperty($ipco) !== null) {
 				$at--;   // keep the padding last, so no real property changes index
 			}
-			array_splice($children, $at, 0, [new TBMFFFileBox(self::ColourBox, self::ColourTypeProfile . $profile)]);
+			array_splice($children, $at, 0, [new (static::BoxClass)(self::ColourBox, self::ColourTypeProfile . $profile)]);
 			$ipco->setChildren($children);
 			$this->associateProperty($this->requireProperties()[0], $item, $at + 1);
 		}
@@ -1586,7 +1599,7 @@ class TBMFF extends TImageFile
 	{
 		$ipma = $iprp->getChild(self::ItemPropertyAssociationBox);
 		if ($ipma === null) {
-			$ipma = new TBMFFFileBox(self::ItemPropertyAssociationBox, pack('N', 0) . pack('N', 0));
+			$ipma = new (static::BoxClass)(self::ItemPropertyAssociationBox, pack('N', 0) . pack('N', 0));
 			$iprp->addChild($ipma);
 		}
 		[$version, $flags, $entries] = $this->readAssociations($ipma->getPayload());
@@ -1687,7 +1700,7 @@ class TBMFF extends TImageFile
 				$this->shiftItemLocations($delta);
 			}
 		} catch (TIOException $e) {
-			$this->setBoxes(TBMFFFileBox::parseBoxes($before));   // undo rather than half-edit
+			$this->setBoxes(static::BoxClass::parseBoxes($before));   // undo rather than half-edit
 			throw $e;
 		}
 		$this->_items = null;
@@ -1755,11 +1768,11 @@ class TBMFF extends TImageFile
 		if ($type === TBMFFItem::MimeType) {
 			$body .= $contentType . "\0";
 		}
-		$entry = (new TBMFFFileBox(self::ItemInfoEntryBox, chr(2) . "\x00\x00\x00" . $body))->toBinary();
+		$entry = (new (static::BoxClass)(self::ItemInfoEntryBox, chr(2) . "\x00\x00\x00" . $body))->toBinary();
 
 		$iinf = $meta->getChild(self::ItemInfoBox);
 		if ($iinf === null) {
-			$meta->addChild(new TBMFFFileBox(self::ItemInfoBox, chr(0) . "\x00\x00\x00" . pack('n', 1) . $entry));
+			$meta->addChild(new (static::BoxClass)(self::ItemInfoBox, chr(0) . "\x00\x00\x00" . pack('n', 1) . $entry));
 			return;
 		}
 		// A table too short to hold its version and count is padded out rather than special
@@ -1786,7 +1799,7 @@ class TBMFF extends TImageFile
 		$iloc = $meta->getChild(self::ItemLocationBox);
 		if ($iloc === null) {
 			// offset_size 4, length_size 4, base_offset_size 0: the address rides the extent.
-			$iloc = new TBMFFFileBox(self::ItemLocationBox, chr(0) . "\x00\x00\x00" . chr(0x44) . chr(0x00) . pack('n', 0));
+			$iloc = new (static::BoxClass)(self::ItemLocationBox, chr(0) . "\x00\x00\x00" . chr(0x44) . chr(0x00) . pack('n', 0));
 			$meta->addChild($iloc);
 		}
 		$payload = $iloc->getPayload();
@@ -1823,12 +1836,12 @@ class TBMFF extends TImageFile
 	{
 		$iref = $meta->getChild(self::ItemReferenceBox);
 		if ($iref === null) {
-			$iref = new TBMFFFileBox(self::ItemReferenceBox);
+			$iref = new (static::BoxClass)(self::ItemReferenceBox);
 			$iref->setChildren([]);
 			$meta->addChild($iref);
 		}
 		$wide = ord(str_pad($iref->getFullBoxHeader(), 1, "\0")) >= 1;   // version 1 widens the ids
 		$body = ($wide ? pack('N', $from) : pack('n', $from)) . pack('n', 1) . ($wide ? pack('N', $to) : pack('n', $to));
-		$iref->addChild(new TBMFFFileBox(self::ContentDescribes, $body));
+		$iref->addChild(new (static::BoxClass)(self::ContentDescribes, $body));
 	}
 }

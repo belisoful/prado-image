@@ -10,6 +10,7 @@
 
 namespace Prado\IO\Image\Meta;
 
+use Prado\Prado;
 use Prado\TComponent;
 
 /**
@@ -56,14 +57,14 @@ class TPIM extends TComponent
 	 * Parses a PrintIM block.
 	 * @param string $data The block bytes.
 	 * @param bool $bigEndian The byte order of the surrounding EXIF block. Default true.
-	 * @return false|TPIM The parsed block, or false when the signature is absent.
+	 * @return false|static The parsed block, or false when the signature is absent.
 	 */
-	public static function parse(string $data, bool $bigEndian = true): false|TPIM
+	public static function parse(string $data, bool $bigEndian = true): false|static
 	{
 		if (!self::isPIM($data)) {
 			return false;
 		}
-		$pim = new self();
+		$pim = Prado::createComponent(static::class);
 		$pim->_bigEndian = $bigEndian;
 		$len = strlen($data);
 		$versionEnd = strpos($data, "\0", 8);
@@ -107,9 +108,9 @@ class TPIM extends TComponent
 	 * current position to the end.
 	 * @param mixed $stream The {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
 	 * @param bool $bigEndian The byte order of the surrounding EXIF block. Default true.
-	 * @return false|TPIM The parsed block, or false when the signature is absent.
+	 * @return false|static The parsed block, or false when the signature is absent.
 	 */
-	public static function fromStream(mixed $stream, bool $bigEndian = true): false|TPIM
+	public static function fromStream(mixed $stream, bool $bigEndian = true): false|static
 	{
 		return static::parse(static::sourceBytes($stream), $bigEndian);
 	}

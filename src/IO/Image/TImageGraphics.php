@@ -45,6 +45,18 @@ use Prado\Exceptions\TIOException;
 class TImageGraphics
 {
 	/**
+	 * @var class-string<TImageGraphicsGD> The class created for the GD graphics library.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const GdLibraryClass = TImageGraphicsGD::class;
+
+	/**
+	 * @var class-string<TImageGraphicsImagick> The class created for the ImageMagick graphics library.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ImagickLibraryClass = TImageGraphicsImagick::class;
+
+	/**
 	 * @var int The {@see getMaxPixels() pixel ceiling} of a process with no memory limit,
 	 *   and so no {@see TImageFile::getMemoryBudget() memory budget} to size one from: 2^28,
 	 *   a 16384 by 16384 raster, which is 768 MiB once decoded to RGB and was measured at
@@ -55,7 +67,7 @@ class TImageGraphics
 	/** @var ?string The explicit default mode, or null to auto-select. */
 	private static ?string $_defaultMode = null;
 
-	/** @var array<string, IImageGraphicsLibrary> The resolved libraries, by mode name. */
+	/** @var array<string, IImageGraphicsLibrary> The resolved libraries, by class. */
 	private static array $_libraries = [];
 
 	/** @var ?int The pixel ceiling set at run time, or null for the budget's. */
@@ -209,9 +221,8 @@ class TImageGraphics
 	public static function getLibrary(?string $mode = null): IImageGraphicsLibrary
 	{
 		$mode = static::validateMode($mode);
-		return self::$_libraries[$mode] ??= $mode === TImageGraphicsMode::Imagick
-			? new TImageGraphicsImagick()
-			: new TImageGraphicsGD();
+		$class = $mode === TImageGraphicsMode::Imagick ? static::ImagickLibraryClass : static::GdLibraryClass;
+		return self::$_libraries[$class] ??= new $class();
 	}
 
 	/**

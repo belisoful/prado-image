@@ -29,6 +29,8 @@
 	"TImageFile": "Prado\\IO\\Image\\TImageFile",
 	"IPrivacyScrubbable": "Prado\\IO\\Image\\IPrivacyScrubbable",
 	"TPrivacyCategory": "Prado\\IO\\Image\\TPrivacyCategory",
+	"IConformable": "Prado\\IO\\Image\\IConformable",
+	"TConformanceCategory": "Prado\\IO\\Image\\TConformanceCategory",
 	"TJPEG": "Prado\\IO\\Image\\TJPEG",
 	"TJXL": "Prado\\IO\\Image\\TJXL",
 	"TJXLSizeHeader": "Prado\\IO\\Image\\TJXLSizeHeader",

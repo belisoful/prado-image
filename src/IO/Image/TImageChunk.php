@@ -30,6 +30,7 @@ use Psr\Http\Message\StreamInterface;
  * loads it.
  *
  * @author Brad Anderson <belisoful@icloud.com>
+ * @phpstan-consistent-constructor
  */
 class TImageChunk extends TComponent
 {
@@ -78,11 +79,11 @@ class TImageChunk extends TComponent
 	 * @param StreamInterface $source The still-open, seekable source.
 	 * @param int $wholeOffset The byte offset of the whole on-disk chunk within the source.
 	 * @param int $wholeLength The length of the whole on-disk chunk (header + payload + trailer).
-	 * @return self The deferred chunk.
+	 * @return static The deferred chunk.
 	 */
 	public static function deferred(string $type, int $size, int $offset, StreamInterface $source, int $wholeOffset, int $wholeLength): self
 	{
-		$chunk = new self($type, $size, $offset, '');
+		$chunk = new static($type, $size, $offset, '');
 		$chunk->_source = $source;
 		$chunk->_wholeOffset = $wholeOffset;
 		$chunk->_wholeLength = $wholeLength;

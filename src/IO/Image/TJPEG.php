@@ -13,12 +13,12 @@ namespace Prado\IO\Image;
 use Prado\Exceptions\TInvalidDataTypeException;
 use Prado\Exceptions\TIOException;
 use Prado\IO\Image\Meta\TEXIF;
-use Prado\IO\Image\Meta\TIPTC;
 use Prado\IO\Image\Meta\TJFIF;
 use Prado\IO\Image\Meta\TJFXX;
 use Prado\IO\Image\Meta\JUMBF\TJUMBFBox;
 use Prado\IO\Image\Meta\TPictureInfo;
 use Prado\IO\Image\Meta\TXMP;
+use Prado\IO\Image\TIFF\TTIFFDataType;
 use Prado\IO\Stream\TLimitStream;
 use Prado\IO\TStream;
 use Prado\IO\Util\TStreamHelper;
@@ -54,6 +54,30 @@ use Psr\Http\Message\StreamInterface;
  */
 class TJPEG extends TImageFile
 {
+	/**
+	 * @var class-string<TJFIF> The class created for JFIF headers.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const JfifClass = TJFIF::class;
+
+	/**
+	 * @var class-string<TJFXX> The class created for JFXX extensions.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const JfxxClass = TJFXX::class;
+
+	/**
+	 * @var class-string<TJUMBFBox> The class created for JUMBF boxes.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const JumbfBoxClass = TJUMBFBox::class;
+
+	/**
+	 * @var class-string<TPictureInfo> The class created for APP12 picture info.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const PictureInfoClass = TPictureInfo::class;
+
 	/** @var int The byte that introduces every marker. */
 	public const MARKER_PREFIX = 0xFF;
 
@@ -195,6 +219,12 @@ class TJPEG extends TImageFile
 	/** @var ?TPhotoshopIRB The parsed Photoshop image resources (APP13), or null when absent. */
 	private ?TPhotoshopIRB $_irb = null;
 
+	/**
+	 * @var ?bool Whether the extended XMP packet that was read is named by its MD5 digest,
+	 *   or null when the file held none.
+	 */
+	private ?bool $_extendedXmpDigestMatches = null;
+
 	/** @var string The preserved entropy-coded scan (from the SOS marker to the end). */
 	private string $_scan = '';
 
@@ -299,7 +329,7 @@ class TJPEG extends TImageFile
 	 */
 	public function getImage(?string $mode = null): false|\GdImage|\Imagick
 	{
-		return TImageGraphics::decode($this->getBytesDirect(), $mode);
+		return static::GraphicsClass::decode($this->getBytesDirect(), $mode);
 	}
 
 	/**
@@ -316,9 +346,9 @@ class TJPEG extends TImageFile
 	 */
 	public function setImage(\GdImage|\Imagick $image, int $quality = 75): void
 	{
-		$bytes = TImageGraphics::encode($image, IImageGraphicsLibrary::FormatJpeg, $quality);
+		$bytes = static::GraphicsClass::encode($image, IImageGraphicsLibrary::FormatJpeg, $quality);
 		if ($bytes === false) {
-			throw new TIOException('jpeg_encode_unavailable', TImageGraphics::getModeOf($image));
+			throw new TIOException('jpeg_encode_unavailable', static::GraphicsClass::getModeOf($image));
 		}
 		$fresh = static::fromString($bytes);
 		// A frame segment (the quantization and Huffman tables, the frame header, the
@@ -348,9 +378,9 @@ class TJPEG extends TImageFile
 	 */
 	public static function fromImage(\GdImage|\Imagick $image, int $quality = 75): static
 	{
-		$bytes = TImageGraphics::encode($image, IImageGraphicsLibrary::FormatJpeg, $quality);
+		$bytes = static::GraphicsClass::encode($image, IImageGraphicsLibrary::FormatJpeg, $quality);
 		if ($bytes === false) {
-			throw new TIOException('jpeg_encode_unavailable', TImageGraphics::getModeOf($image));
+			throw new TIOException('jpeg_encode_unavailable', static::GraphicsClass::getModeOf($image));
 		}
 		return static::fromString($bytes);
 	}
@@ -499,7 +529,7 @@ class TJPEG extends TImageFile
 		if ($text === null) {
 			return null;
 		}
-		$xmp = TXMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -753,6 +783,40 @@ class TJPEG extends TImageFile
 	 * @param int $types The {@see TPrivacyCategory} flags to remove.
 	 * @return int The number of fields removed.
 	 */
+	/**
+	 * Reports an extended XMP packet whose digest is not the name it goes by.  The packet
+	 * is read all the same -- writers in the wild name them with digests of something
+	 * else -- so this is advice, and a rewrite names the packet by its own digest.
+	 * @param int $types The {@see TConformanceCategory} flags to report.
+	 * @return array<string, string> What is wrong, by field.
+	 */
+	protected function validateFormat(int $types): array
+	{
+		if (($types & TConformanceCategory::Advisory) && $this->_extendedXmpDigestMatches === false) {
+			return ['XMP xmpNote:HasExtendedXMP' => 'the extended packet is not named by its MD5 digest'];
+		}
+		return [];
+	}
+
+	/**
+	 * Adds the pixel dimensions Exif requires beside the other fields of the Exif
+	 * directory, which only the image can state.
+	 * @param int $types The {@see TConformanceCategory} flags to correct.
+	 * @return int The number of fields added.
+	 */
+	protected function conformFormat(int $types): int
+	{
+		$exif = $this->getEXIF()?->getExifIfd();
+		$added = 0;
+		foreach ([0xA002 => $this->getWidth(), 0xA003 => $this->getHeight()] as $id => $pixels) {
+			if (($types & TConformanceCategory::Required) && $exif !== null && $pixels !== null && $exif->getTag($id) === null) {
+				$exif->setTagValues($id, TTIFFDataType::ULong, [$pixels]);
+				$added++;
+			}
+		}
+		return $added;
+	}
+
 	protected function clearFormatPrivateData(int $types): int
 	{
 		$removed = 0;
@@ -839,7 +903,7 @@ class TJPEG extends TImageFile
 			$this->setICCProfileDirect(implode('', $chunks['icc']));
 		}
 		if ($chunks['irb'] !== []) {
-			$irb = TPhotoshopIRB::parse(implode('', $chunks['irb']));
+			$irb = static::IrbClass::parse(implode('', $chunks['irb']));
 			if ($irb !== false) {
 				$this->setPhotoshopIRB($irb);
 				$this->setIptcDirect($irb->getIPTC());
@@ -996,10 +1060,11 @@ class TJPEG extends TImageFile
 		}
 		ksort($parts);
 		$text = implode('', $parts);
-		$extended = strlen($text) === $total ? TXMP::parse($text) : false;
+		$extended = strlen($text) === $total ? static::XmpClass::parse($text) : false;
 		if ($extended === false) {
 			return;
 		}
+		$this->_extendedXmpDigestMatches = strtoupper(md5($text)) === strtoupper($wanted);
 		$main->merge($extended);
 		$main->removeProperty(TXMP::NS_NOTE, 'HasExtendedXMP');
 		$this->setXmpText($main->toPacketText());
@@ -1024,7 +1089,7 @@ class TJPEG extends TImageFile
 		// Too large for one segment: the whole packet moves to the extension segments
 		// and the main packet keeps only the digest that links them.
 		$digest = strtoupper(md5($text));
-		$main = TXMP::blank();
+		$main = static::XmpClass::blank();
 		$main->setProperty(TXMP::NS_NOTE, 'HasExtendedXMP', $digest);
 		$out = $this->segmentBytes(self::APP1, self::XMP_IDENTIFIER . $main->toPacketText(false));
 
@@ -1063,7 +1128,7 @@ class TJPEG extends TImageFile
 		$boxes = [];
 		foreach ($instances as $instance) {
 			ksort($instance['fragments']);
-			$box = TJUMBFBox::parse($instance['header'] . implode('', $instance['fragments']));
+			$box = static::JumbfBoxClass::parse($instance['header'] . implode('', $instance['fragments']));
 			if ($box !== false) {
 				$boxes[] = $box;
 			}
@@ -1108,7 +1173,7 @@ class TJPEG extends TImageFile
 		if ($marker === self::APP1 && !$this->hasSegmentKind('exif') && str_starts_with($payload, TEXIF::ExifSignature)) {
 			// A malformed EXIF block is kept as a raw segment so the file still round-trips.
 			try {
-				$exif = TEXIF::fromSegment($payload);
+				$exif = static::ExifClass::fromSegment($payload);
 			} catch (TIOException $e) {
 				$exif = false;
 			}
@@ -1124,7 +1189,7 @@ class TJPEG extends TImageFile
 			return;   // reassembled after the walk, then merged into the main packet
 		} elseif ($marker === self::APP3 && !$this->hasSegmentKind('meta') && str_starts_with($payload, TEXIF::MetaSignature)) {
 			try {
-				$meta = TEXIF::fromSegment($payload);
+				$meta = static::ExifClass::fromSegment($payload);
 			} catch (TIOException $e) {
 				$meta = false;
 			}
@@ -1133,12 +1198,12 @@ class TJPEG extends TImageFile
 			return;
 		}
 		if ($marker === self::APP0 && !$this->hasSegmentKind('jfif') && TJFIF::isJFIF($payload)) {
-			$jfif = TJFIF::parse($payload);
+			$jfif = static::JfifClass::parse($payload);
 			$this->setJFIF($jfif === false ? null : $jfif);
 			$this->addSegment($marker, 'jfif');
 			return;
 		} elseif ($marker === self::APP0 && !$this->hasSegmentKind('jfxx') && TJFXX::isJFXX($payload)) {
-			$jfxx = TJFXX::parse($payload);
+			$jfxx = static::JfxxClass::parse($payload);
 			$this->setJFXX($jfxx === false ? null : $jfxx);
 			$this->addSegment($marker, 'jfxx');
 			return;
@@ -1149,7 +1214,7 @@ class TJPEG extends TImageFile
 			}
 			return;
 		} elseif ($marker === self::APP12 && !$this->hasSegmentKind('pictureinfo') && TPictureInfo::isPictureInfo($payload)) {
-			$info = TPictureInfo::parse($payload);
+			$info = static::PictureInfoClass::parse($payload);
 			$this->setPictureInfo($info === false ? null : $info);
 			$this->addSegment($marker, $info === false ? 'raw' : 'pictureinfo', $info === false ? $payload : '');
 			return;
@@ -1160,7 +1225,7 @@ class TJPEG extends TImageFile
 			}
 			return;
 		} elseif ($marker === self::APP13 && !$this->hasSegmentKind('iptc') && $this->isIptc($payload)) {
-			$iptc = TIPTC::parse($payload);
+			$iptc = static::IptcClass::parse($payload);
 			$this->setIptcDirect($iptc === false ? null : $iptc);
 			$this->addSegment($marker, 'iptc');
 			return;

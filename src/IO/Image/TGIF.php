@@ -61,6 +61,18 @@ use Psr\Http\Message\StreamInterface;
  */
 class TGIF extends TImageFile
 {
+	/**
+	 * @var class-string<TGIFExtension> The class created for extension blocks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ExtensionClass = TGIFExtension::class;
+
+	/**
+	 * @var class-string<TGIFFrame> The class created for frames.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const FrameClass = TGIFFrame::class;
+
 	/** @var string The 1987 version signature. */
 	public const Signature87a = 'GIF87a';
 
@@ -371,7 +383,7 @@ class TGIF extends TImageFile
 	 */
 	public function addComment(string $text): void
 	{
-		$this->_blocks[] = TGIFExtension::comment($text);
+		$this->_blocks[] = static::ExtensionClass::comment($text);
 	}
 
 	/**
@@ -461,7 +473,7 @@ class TGIF extends TImageFile
 			$existing->setSubBlocks([self::NetscapeIdentity, $data]);
 			return;
 		}
-		$extension = TGIFExtension::application(self::NetscapeIdentity, $data);
+		$extension = static::ExtensionClass::application(self::NetscapeIdentity, $data);
 		// The loop block belongs before the first frame.
 		$at = count($this->_blocks);
 		foreach ($this->_blocks as $index => $block) {
@@ -527,13 +539,13 @@ class TGIF extends TImageFile
 	 */
 	public function setImage(\GdImage|\Imagick $image): void
 	{
-		[$width, $height] = TImageGraphics::getSize($image);
-		[$palette, $pixels] = TImageGraphics::paletteQuantize($image);
+		[$width, $height] = static::GraphicsClass::getSize($image);
+		[$palette, $pixels] = static::GraphicsClass::paletteQuantize($image);
 
 		$this->setScreenSize($width, $height);
 		$this->setGlobalColorTable($palette);
 
-		$frame = new TGIFFrame();
+		$frame = new (static::FrameClass)();
 		$frame->setWidth($width);
 		$frame->setHeight($height);
 		$frame->setMinCodeSize(TGIFFrame::minCodeSizeFor($palette));
@@ -570,7 +582,7 @@ class TGIF extends TImageFile
 	{
 		$this->replaceApplicationExtension(
 			self::XmpIdentity,
-			$xmp === null ? null : TGIFExtension::rawApplication(self::XmpIdentity, $xmp),
+			$xmp === null ? null : static::ExtensionClass::rawApplication(self::XmpIdentity, $xmp),
 		);
 	}
 
@@ -584,7 +596,7 @@ class TGIF extends TImageFile
 		if ($text === null) {
 			return null;
 		}
-		$xmp = \Prado\IO\Image\Meta\TXMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -616,7 +628,7 @@ class TGIF extends TImageFile
 	{
 		$this->replaceApplicationExtension(
 			self::ICCIdentity,
-			$profile === null ? null : TGIFExtension::application(self::ICCIdentity, $profile),
+			$profile === null ? null : static::ExtensionClass::application(self::ICCIdentity, $profile),
 		);
 	}
 
@@ -683,11 +695,11 @@ class TGIF extends TImageFile
 	 */
 	public static function fromImage(\GdImage|\Imagick $image): static
 	{
-		[$width, $height] = TImageGraphics::getSize($image);
-		[$palette, $pixels] = TImageGraphics::paletteQuantize($image);
+		[$width, $height] = static::GraphicsClass::getSize($image);
+		[$palette, $pixels] = static::GraphicsClass::paletteQuantize($image);
 
 		$gif = static::fromString(static::blankBytes($width, $height, $palette));
-		$frame = new TGIFFrame();
+		$frame = new (static::FrameClass)();
 		$frame->setWidth($width);
 		$frame->setHeight($height);
 		$frame->setMinCodeSize(TGIFFrame::minCodeSizeFor($palette));
@@ -804,7 +816,7 @@ class TGIF extends TImageFile
 			];
 			return $i;
 		}
-		$this->_blocks[] = new TGIFExtension($label, $subBlocks);
+		$this->_blocks[] = new (static::ExtensionClass)($label, $subBlocks);
 		return $i;
 	}
 
@@ -825,7 +837,7 @@ class TGIF extends TImageFile
 			throw new TIOException('gif_invalid', 'an image descriptor is truncated');
 		}
 		$this->countPart();
-		$frame = new TGIFFrame();
+		$frame = new (static::FrameClass)();
 		$d = unpack('vleft/vtop/vwidth/vheight', substr($bytes, $i + 1, 8));
 		$frame->setLeft($d['left']);
 		$frame->setTop($d['top']);
@@ -898,7 +910,7 @@ class TGIF extends TImageFile
 		if ($trailer === false) {
 			return null;
 		}
-		$extension = TGIFExtension::rawApplication($identity, substr($bytes, $start, $trailer - $start));
+		$extension = static::ExtensionClass::rawApplication($identity, substr($bytes, $start, $trailer - $start));
 		$i = $trailer + strlen(TGIFExtension::MagicTrailer);
 		return $extension;
 	}
@@ -944,11 +956,17 @@ class TGIF extends TImageFile
 	 */
 	protected function compose(): string
 	{
-		$out = $this->headerBytes();
+		// Gathered and joined once: a frame's sub-blocks go from where they are held straight
+		// into the file, without the frame being built as a string of its own on the way.
+		$parts = [$this->headerBytes()];
 		foreach ($this->_blocks as $block) {
-			$out .= $block->toBinary();
+			foreach ($block->toParts() as $part) {
+				$parts[] = $part;
+			}
 		}
-		return $out . chr(TGIFBlockType::Trailer) . $this->_trailingBytes;
+		$parts[] = chr(TGIFBlockType::Trailer);
+		$parts[] = $this->_trailingBytes;
+		return implode('', $parts);
 	}
 
 	/**
@@ -1050,7 +1068,7 @@ class TGIF extends TImageFile
 	 */
 	private function parseFrameStream(StreamInterface $stream, ?array $pending): void
 	{
-		$frame = new TGIFFrame();
+		$frame = new (static::FrameClass)();
 		$descriptor = TStreamHelper::copyToString($stream, 9);   // 8 geometry bytes + 1 packed byte
 		$d = unpack('vleft/vtop/vwidth/vheight', substr($descriptor, 0, 8));
 		$frame->setLeft($d['left']);

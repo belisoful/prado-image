@@ -50,6 +50,18 @@ use Psr\Http\Message\StreamInterface;
  */
 class TPNG extends TImageFile
 {
+	/**
+	 * @var class-string<TImageChunk> The class created for chunks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ChunkClass = TImageChunk::class;
+
+	/**
+	 * @var class-string<TAPNGFrame> The class created for frames.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const FrameClass = TAPNGFrame::class;
+
 	/** @var string The 8-byte PNG signature. */
 	public const Signature = "\x89PNG\r\n\x1a\n";
 
@@ -164,7 +176,7 @@ class TPNG extends TImageFile
 			return;
 		}
 		$payload = self::XmpKeyword . "\0" . "\x00\x00" . "\0" . "\0" . $xmp;
-		$this->addChunk(new TImageChunk(TPNGChunkType::InternationalText, strlen($payload), 0, $payload));
+		$this->addChunk(new (static::ChunkClass)(TPNGChunkType::InternationalText, strlen($payload), 0, $payload));
 	}
 
 	/**
@@ -177,7 +189,7 @@ class TPNG extends TImageFile
 		if ($text === null) {
 			return null;
 		}
-		$xmp = \Prado\IO\Image\Meta\TXMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -312,7 +324,7 @@ class TPNG extends TImageFile
 			return;
 		}
 		$payload = self::ICCProfileName . "\x00" . "\x00" . $this->deflate($profile);
-		$this->setChunk(new TImageChunk(TPNGChunkType::ICCProfile, strlen($payload), 0, $payload));
+		$this->setChunk(new (static::ChunkClass)(TPNGChunkType::ICCProfile, strlen($payload), 0, $payload));
 	}
 
 	/**
@@ -327,7 +339,7 @@ class TPNG extends TImageFile
 			return null;
 		}
 		try {
-			$exif = \Prado\IO\Image\Meta\TEXIF::fromTiffString($data);
+			$exif = static::ExifClass::fromTiffString($data);
 		} catch (TIOException $e) {
 			return null;
 		}
@@ -347,7 +359,7 @@ class TPNG extends TImageFile
 		}
 		$exif->setSignature('');   // the chunk holds no segment signature
 		$data = $exif->toBinary();
-		$this->setChunk(new TImageChunk(TPNGChunkType::Exif, strlen($data), 0, $data));
+		$this->setChunk(new (static::ChunkClass)(TPNGChunkType::Exif, strlen($data), 0, $data));
 	}
 
 	/**
@@ -361,7 +373,7 @@ class TPNG extends TImageFile
 		if ($data === null) {
 			return null;
 		}
-		$irb = TPhotoshopIRB::parse($data);
+		$irb = static::IrbClass::parse($data);
 		return $irb === false ? null : $irb;
 	}
 
@@ -390,7 +402,7 @@ class TPNG extends TImageFile
 		if ($bare === null) {
 			return null;
 		}
-		$parsed = TIPTC::parse($bare);
+		$parsed = static::IptcClass::parse($bare);
 		return $parsed === false ? null : $parsed;
 	}
 
@@ -413,7 +425,7 @@ class TPNG extends TImageFile
 			$this->setPhotoshopIRB($irb->getResources() === [] ? null : $irb);
 			return;
 		}
-		$irb ??= new TPhotoshopIRB();
+		$irb ??= new (static::IrbClass)();
 		$irb->setIPTC($iptc);
 		$this->setPhotoshopIRB($irb);
 	}
@@ -461,7 +473,7 @@ class TPNG extends TImageFile
 		// Deflated before the old chunk goes, so a refusal leaves the file as it was.
 		$payload = $keyword . "\x00" . "\x00" . $this->deflate($text);
 		$this->removeTextChunk($keyword);
-		$this->addChunk(new TImageChunk(TPNGChunkType::CompressedText, strlen($payload), 0, $payload));
+		$this->addChunk(new (static::ChunkClass)(TPNGChunkType::CompressedText, strlen($payload), 0, $payload));
 	}
 
 	/**
@@ -644,7 +656,7 @@ class TPNG extends TImageFile
 	 */
 	public function getImage(?string $mode = null): false|\GdImage|\Imagick
 	{
-		return TImageGraphics::decode($this->getBytesDirect(), $mode);
+		return static::GraphicsClass::decode($this->getBytesDirect(), $mode);
 	}
 
 	/**
@@ -657,9 +669,9 @@ class TPNG extends TImageFile
 	 */
 	public function setImage(\GdImage|\Imagick $image): void
 	{
-		$bytes = TImageGraphics::encode($image, IImageGraphicsLibrary::FormatPng);
+		$bytes = static::GraphicsClass::encode($image, IImageGraphicsLibrary::FormatPng);
 		if ($bytes === false) {
-			throw new TIOException('png_encode_unavailable', TImageGraphics::getModeOf($image));
+			throw new TIOException('png_encode_unavailable', static::GraphicsClass::getModeOf($image));
 		}
 		$carried = [];
 		foreach ($this->_chunks as $chunk) {
@@ -702,9 +714,9 @@ class TPNG extends TImageFile
 	 */
 	public static function fromImage(\GdImage|\Imagick $image): static
 	{
-		$bytes = TImageGraphics::encode($image, IImageGraphicsLibrary::FormatPng);
+		$bytes = static::GraphicsClass::encode($image, IImageGraphicsLibrary::FormatPng);
 		if ($bytes === false) {
-			throw new TIOException('png_encode_unavailable', TImageGraphics::getModeOf($image));
+			throw new TIOException('png_encode_unavailable', static::GraphicsClass::getModeOf($image));
 		}
 		return static::fromString($bytes);
 	}
@@ -780,7 +792,7 @@ class TPNG extends TImageFile
 			switch ($chunk->getType()) {
 				case TPNGChunkType::FrameControl:
 					$flush();
-					$pending = (new TAPNGFrame())->loadFcTl($chunk->getData());
+					$pending = (new (static::FrameClass)())->loadFcTl($chunk->getData());
 					$pending->setIsDefault(!$sawImageData);   // an fcTL before any IDAT describes the default image
 					break;
 				case TPNGChunkType::ImageData:
@@ -814,7 +826,7 @@ class TPNG extends TImageFile
 		if (!isset($frames[$index])) {
 			throw new TIOException('png_frame_unknown', $index);
 		}
-		return TImageGraphics::decode($this->frameToPng($frames[$index]), $mode);
+		return static::GraphicsClass::decode($this->frameToPng($frames[$index]), $mode);
 	}
 
 	/**
@@ -848,19 +860,19 @@ class TPNG extends TImageFile
 		foreach ([TPNGChunkType::AnimationControl, TPNGChunkType::FrameControl, TPNGChunkType::FrameData, TPNGChunkType::ImageData] as $type) {
 			$this->removeChunk($type);
 		}
-		$this->setChunk(new TImageChunk(TPNGChunkType::AnimationControl, 8, 0, pack('NN', count($frames), max(0, $playCount))));
+		$this->setChunk(new (static::ChunkClass)(TPNGChunkType::AnimationControl, 8, 0, pack('NN', count($frames), max(0, $playCount))));
 
 		// The interleaved frame region: fcTL/IDAT for frame 0, then fcTL/fdAT per frame,
 		// with one ascending sequence number across every fcTL and fdAT.
 		$region = [];
 		$sequence = 0;
 		foreach ($frames as $index => $frame) {
-			$region[] = new TImageChunk(TPNGChunkType::FrameControl, 26, 0, pack('N', $sequence++) . $frame->fcTlFields());
+			$region[] = new (static::ChunkClass)(TPNGChunkType::FrameControl, 26, 0, pack('N', $sequence++) . $frame->fcTlFields());
 			if ($index === 0) {
-				$region[] = new TImageChunk(TPNGChunkType::ImageData, strlen($frame->getData()), 0, $frame->getData());
+				$region[] = new (static::ChunkClass)(TPNGChunkType::ImageData, strlen($frame->getData()), 0, $frame->getData());
 			} else {
 				$payload = pack('N', $sequence++) . $frame->getData();
-				$region[] = new TImageChunk(TPNGChunkType::FrameData, strlen($payload), 0, $payload);
+				$region[] = new (static::ChunkClass)(TPNGChunkType::FrameData, strlen($payload), 0, $payload);
 			}
 		}
 		$this->spliceBeforeEnd($region);
@@ -878,8 +890,8 @@ class TPNG extends TImageFile
 	 */
 	public function addApngFrame(\GdImage|\Imagick $image, float $delaySeconds = 0.1, int $disposeOp = TAPNGFrame::DisposeNone, int $blendOp = TAPNGFrame::BlendSource): void
 	{
-		[$width, $height] = TImageGraphics::getSize($image);
-		$frame = new TAPNGFrame();
+		[$width, $height] = static::GraphicsClass::getSize($image);
+		$frame = new (static::FrameClass)();
 		$frame->setWidth($width);
 		$frame->setHeight($height);
 		$frame->setDelaySeconds($delaySeconds);
@@ -909,8 +921,8 @@ class TPNG extends TImageFile
 		$png = static::fromImage($images[0]);
 		$frames = [];
 		foreach ($images as $image) {
-			[$width, $height] = TImageGraphics::getSize($image);
-			$frame = new TAPNGFrame();
+			[$width, $height] = static::GraphicsClass::getSize($image);
+			$frame = new (static::FrameClass)();
 			$frame->setWidth($width);
 			$frame->setHeight($height);
 			$frame->setDelaySeconds($delaySeconds);
@@ -930,9 +942,9 @@ class TPNG extends TImageFile
 	 */
 	protected function encodeFrameData(\GdImage|\Imagick $image): string
 	{
-		$bytes = TImageGraphics::encode($image, IImageGraphicsLibrary::FormatPng);
+		$bytes = static::GraphicsClass::encode($image, IImageGraphicsLibrary::FormatPng);
 		if ($bytes === false) {
-			throw new TIOException('png_encode_unavailable', TImageGraphics::getModeOf($image));
+			throw new TIOException('png_encode_unavailable', static::GraphicsClass::getModeOf($image));
 		}
 		$data = '';
 		foreach (static::fromString($bytes)->getChunks() as $chunk) {
@@ -1024,7 +1036,7 @@ class TPNG extends TImageFile
 			$type = substr($bytes, $i + 4, 4);
 			$payload = substr($bytes, $i + 8, $size);
 			self::assertPartCount(count($this->_chunks) + 1, $len);
-			$this->_chunks[] = new TImageChunk($type, $size, $i + 8, $payload);
+			$this->_chunks[] = new (static::ChunkClass)($type, $size, $i + 8, $payload);
 			if ($type === TPNGChunkType::Header && strlen($payload) >= 8) {
 				$this->setWidthDirect((int) unpack('N', substr($payload, 0, 4))[1]);
 				$this->setHeightDirect((int) unpack('N', substr($payload, 4, 4))[1]);
@@ -1088,13 +1100,13 @@ class TPNG extends TImageFile
 			self::assertPartCount(count($this->_chunks) + 1, $start + 8 + $size);
 			if ($type === TPNGChunkType::ImageData) {
 				// Defer the whole on-disk chunk (length + type + payload + CRC) and skip its bytes.
-				$this->_chunks[] = TImageChunk::deferred($type, $size, $start + 8, $stream, $start, 8 + $size + 4);
+				$this->_chunks[] = static::ChunkClass::deferred($type, $size, $start + 8, $stream, $start, 8 + $size + 4);
 				$stream->seek($start + 8 + $size + 4);
 				continue;
 			}
 			$payload = TStreamHelper::copyToString($stream, $size);
 			$stream->seek($stream->tell() + 4);   // skip the CRC
-			$this->_chunks[] = new TImageChunk($type, $size, $start + 8, $payload);
+			$this->_chunks[] = new (static::ChunkClass)($type, $size, $start + 8, $payload);
 			if ($type === TPNGChunkType::Header && strlen($payload) >= 8) {
 				$this->setWidthDirect((int) unpack('N', substr($payload, 0, 4))[1]);
 				$this->setHeightDirect((int) unpack('N', substr($payload, 4, 4))[1]);
@@ -1142,13 +1154,17 @@ class TPNG extends TImageFile
 	 */
 	protected function compose(): string
 	{
-		$out = self::Signature;
+		// Gathered and joined once: appending each chunk to its header and then to the file
+		// holds the largest chunk twice more than the file being built.
+		$parts = [self::Signature];
 		foreach ($this->getChunks() as $chunk) {
 			$type = $chunk->getType();
 			$data = $chunk->getData();
-			$out .= pack('N', strlen($data)) . $type . $data . pack('N', crc32($type . $data));
+			$parts[] = pack('N', strlen($data)) . $type;
+			$parts[] = $data;
+			$parts[] = pack('N', crc32($type . $data));
 		}
-		return $out;
+		return implode('', $parts);
 	}
 
 }

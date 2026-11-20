@@ -10,6 +10,7 @@
 
 namespace Prado\IO\Image;
 
+use Prado\Prado;
 use Prado\TComponent;
 
 /**
@@ -85,14 +86,14 @@ class TJXLSizeHeader extends TComponent
 	/**
 	 * Reads the size header from the start of a codestream.
 	 * @param string $codestream The codestream, beginning with {@see Signature}.
-	 * @return ?self The header, or null when the bytes are not a codestream or end early.
+	 * @return ?static The header, or null when the bytes are not a codestream or end early.
 	 */
-	public static function fromCodestream(string $codestream): ?self
+	public static function fromCodestream(string $codestream): ?static
 	{
 		if (!str_starts_with($codestream, self::Signature)) {
 			return null;
 		}
-		$header = new self();
+		$header = Prado::createComponent(static::class);
 		return $header->read(substr($codestream, strlen(self::Signature), 16)) ? $header : null;
 	}
 

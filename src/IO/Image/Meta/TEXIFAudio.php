@@ -48,6 +48,18 @@ class TEXIFAudio extends TComponent
 {
 	use TStreamIOTrait;
 
+	/**
+	 * @var class-string<TImageChunk> The class created for chunks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ChunkClass = TImageChunk::class;
+
+	/**
+	 * @var class-string<TRIFF> The class created for RIFF containers.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const RiffClass = TRIFF::class;
+
 	/** The RIFF form type of a WAVE audio file. */
 	public const FormType = 'WAVE';
 
@@ -88,7 +100,7 @@ class TEXIFAudio extends TComponent
 	final public function __construct(?TRIFF $riff = null)
 	{
 		if ($riff === null) {
-			$riff = new TRIFF();
+			$riff = new (static::RiffClass)();
 			$riff->setFormType(self::FormType);
 		}
 		$this->_riff = $riff;
@@ -128,7 +140,7 @@ class TEXIFAudio extends TComponent
 	 */
 	public static function fromString(string $bytes): static
 	{
-		$riff = TRIFF::fromString($bytes);
+		$riff = static::RiffClass::fromString($bytes);
 		if ($riff->getFormType() !== self::FormType) {
 			throw new TIOException('exifaudio_not_wave', $riff->getFormType());
 		}
@@ -480,7 +492,7 @@ class TEXIFAudio extends TComponent
 			}
 		}
 		if ($list === null) {
-			$this->_riff->addChunk(new TImageChunk('LIST', strlen($data), 0, $data));
+			$this->_riff->addChunk(new (static::ChunkClass)('LIST', strlen($data), 0, $data));
 		} else {
 			$list->setData($data);
 		}

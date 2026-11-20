@@ -57,6 +57,24 @@ use Psr\Http\Message\StreamInterface;
  */
 class TAVI extends TImageFile
 {
+	/**
+	 * @var class-string<TImageChunk> The class created for chunks.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ChunkClass = TImageChunk::class;
+
+	/**
+	 * @var class-string<TRIFFList> The class created for RIFF lists.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ListClass = TRIFFList::class;
+
+	/**
+	 * @var class-string<TRIFF> The class created for RIFF containers.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const RiffClass = TRIFF::class;
+
 	/** The RIFF form type of an AVI file. */
 	public const FormType = 'AVI ';
 
@@ -144,7 +162,7 @@ class TAVI extends TImageFile
 	public function getRIFF(): TRIFF
 	{
 		if ($this->_riff === null) {
-			$this->_riff = new TRIFF();
+			$this->_riff = new (static::RiffClass)();
 			$this->_riff->setFormType(self::FormType);
 		}
 		return $this->_riff;
@@ -210,7 +228,7 @@ class TAVI extends TImageFile
 				$payload .= "\0"; // pad to an even length
 			}
 		}
-		$this->placeChunk($existing, new TRIFFList(TRIFFChunkType::RiffList, strlen($payload), 0, $payload));
+		$this->placeChunk($existing, new (static::ListClass)(TRIFFChunkType::RiffList, strlen($payload), 0, $payload));
 	}
 
 	/**
@@ -271,7 +289,7 @@ class TAVI extends TImageFile
 		if ($text === null) {
 			return null;
 		}
-		$xmp = TXMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -372,7 +390,7 @@ class TAVI extends TImageFile
 		if (!$stream instanceof StreamInterface) {
 			throw new TInvalidDataTypeException('streamio_source_invalid', get_debug_type($stream));
 		}
-		$riff = TRIFF::fromStreamLazy($stream, [TRIFFChunkType::RiffList . ':' . TRIFFChunkType::MovieList]);
+		$riff = static::RiffClass::fromStreamLazy($stream, [TRIFFChunkType::RiffList . ':' . TRIFFChunkType::MovieList]);
 		if ($riff->getFormType() !== self::FormType) {
 			throw new TIOException('avi_invalid', 'RIFF form type is not AVI');
 		}
@@ -411,7 +429,7 @@ class TAVI extends TImageFile
 	 */
 	protected function parse(): void
 	{
-		$riff = TRIFF::fromString($this->getBytesDirect());
+		$riff = static::RiffClass::fromString($this->getBytesDirect());
 		if ($riff->getFormType() !== self::FormType) {
 			throw new TIOException('avi_invalid', 'RIFF form type is not AVI');
 		}
@@ -532,7 +550,7 @@ class TAVI extends TImageFile
 	protected function setMetaChunk(string $id, ?string $data): void
 	{
 		$existing = $this->findChunkIndex($id);
-		$this->placeChunk($existing, $data === null ? null : new TImageChunk($id, strlen($data), 0, $data));
+		$this->placeChunk($existing, $data === null ? null : new (static::ChunkClass)($id, strlen($data), 0, $data));
 	}
 
 	/**
@@ -687,7 +705,7 @@ class TAVI extends TImageFile
 	 */
 	protected function junk(int $payload): TImageChunk
 	{
-		return new TImageChunk(TRIFFChunkType::Junk, $payload, 0, str_repeat("\0", $payload));
+		return new (static::ChunkClass)(TRIFFChunkType::Junk, $payload, 0, str_repeat("\0", $payload));
 	}
 
 	/**

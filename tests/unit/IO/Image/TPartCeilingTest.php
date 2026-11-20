@@ -241,17 +241,17 @@ class TPartCeilingTest extends PHPUnit\Framework\TestCase
 		self::assertNull(TImageFile::getMaxFileSize());
 		TImageFile::assertFileSize(PHP_INT_MAX);
 
-		// Reading and saving a file peaks at up to 4.4 times its length, so a budget allows
-		// a fifth of itself.  (The limit set here is one the suite's own memory fits under
+		// Reading and saving a file peaks at up to 3.8 times its length, so a budget allows
+		// a quarter of itself.  (The limit set here is one the suite's own memory fits under
 		// however it is run: PHP refuses a limit below what is already in use.)
 		ini_set('memory_limit', '16G');
-		self::assertSame(5, TImageFile::BudgetBytesPerFileByte);
-		self::assertSame(intdiv(8 << 30, 5), TImageFile::getMaxFileSize());
+		self::assertSame(4, TImageFile::BudgetBytesPerFileByte);
+		self::assertSame(2 << 30, TImageFile::getMaxFileSize());
 		TImageFile::setMemoryBudget('100M');
-		self::assertSame(20 << 20, TImageFile::getMaxFileSize());
-		// Half of PHP's stock 128M is a budget of 64 MiB, and so a file of 12.8.
+		self::assertSame(25 << 20, TImageFile::getMaxFileSize());
+		// Half of PHP's stock 128M is a budget of 64 MiB, and so a file of 16.
 		TImageFile::setMemoryBudget(64 << 20);
-		self::assertSame(13421772, TImageFile::getMaxFileSize());
+		self::assertSame(16 << 20, TImageFile::getMaxFileSize());
 
 		// Its own setter moves it alone and outlasts a new budget, until it is handed back.
 		TImageFile::setMaxFileSize(1000);
@@ -260,7 +260,7 @@ class TPartCeilingTest extends PHPUnit\Framework\TestCase
 		TImageFile::assertFileSize(1000);   // exactly at the ceiling
 		$this->assertTooLong(fn () => TImageFile::assertFileSize(1001), 'one byte more');
 		TImageFile::setMaxFileSize(null);
-		self::assertSame(intdiv(1 << 30, 5), TImageFile::getMaxFileSize());
+		self::assertSame(1 << 28, TImageFile::getMaxFileSize());
 	}
 
 	public function testEveryContainerRefusesAFileLongerThanTheFileCeiling(): void

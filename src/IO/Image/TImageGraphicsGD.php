@@ -33,6 +33,18 @@ use Prado\IO\Image\ICC\TICCTransform;
 class TImageGraphicsGD implements IImageGraphicsLibrary
 {
 	/**
+	 * @var class-string<TICCProfile> The class created for ICC profiles.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ICCProfileClass = TICCProfile::class;
+
+	/**
+	 * @var class-string<TICCTransform> The class created for ICC transforms.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ICCTransformClass = TICCTransform::class;
+
+	/**
 	 * Returns the library's {@see TImageGraphicsMode} name.
 	 * @return string The mode name.
 	 */
@@ -285,12 +297,12 @@ class TImageGraphicsGD implements IImageGraphicsLibrary
 	public function transformICCProfile(\GdImage|\Imagick $image, string $source, string $destination): bool
 	{
 		$image = $this->gdImage($image);
-		$sourceProfile = TICCProfile::parse($source);
-		$destinationProfile = TICCProfile::parse($destination);
+		$sourceProfile = static::ICCProfileClass::parse($source);
+		$destinationProfile = static::ICCProfileClass::parse($destination);
 		if ($sourceProfile === null || $destinationProfile === null) {
 			return false;
 		}
-		$transform = TICCTransform::between($sourceProfile, $destinationProfile);
+		$transform = static::ICCTransformClass::between($sourceProfile, $destinationProfile);
 		if ($transform === null) {
 			return false;
 		}

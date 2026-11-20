@@ -45,6 +45,18 @@ use Prado\IO\Image\TImageGraphics;
  */
 class TTIFFRaster
 {
+	/**
+	 * @var class-string<TCCITTFaxCompressor> The class created for CCITT fax codecs.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const FaxCompressorClass = TCCITTFaxCompressor::class;
+
+	/**
+	 * @var class-string<TImageGraphics> The graphics facade this class draws through.
+	 *   A subclass names its own here to have that used instead.
+	 */
+	public const GraphicsClass = TImageGraphics::class;
+
 	/** The PhotometricInterpretation of a white-is-zero grayscale raster. */
 	public const WhiteIsZero = 0;
 
@@ -111,7 +123,7 @@ class TTIFFRaster
 		if ($width < 1 || $height < 1) {
 			return null;
 		}
-		TImageGraphics::assertPixelCount($width, $height);   // before any buffer is sized from them
+		static::GraphicsClass::assertPixelCount($width, $height);   // before any buffer is sized from them
 		$geometry = static::readGeometry($ifd, $width, $height, $bigEndian);
 		if ($geometry === null) {
 			return null;
@@ -358,7 +370,7 @@ class TTIFFRaster
 					3 => (($geometry['t4options'] ?? 0) & 1) ? TCCITTFaxCompressor::Group3TwoD : TCCITTFaxCompressor::Group3,
 					default => TCCITTFaxCompressor::Group4,
 				};
-				$data = (new TCCITTFaxCompressor($blockWidth, $mode))->decode($data, $rows);
+				$data = (new (static::FaxCompressorClass)($blockWidth, $mode))->decode($data, $rows);
 				break;
 			case 5:
 				$data = TLZWCompressor::decompress($data);

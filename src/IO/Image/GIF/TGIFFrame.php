@@ -41,6 +41,12 @@ use Psr\Http\Message\StreamInterface;
  */
 class TGIFFrame extends TComponent
 {
+	/**
+	 * @var class-string<TImageGraphics> The graphics facade this class draws through.
+	 *   A subclass names its own here to have that used instead.
+	 */
+	public const GraphicsClass = TImageGraphics::class;
+
 	/** @var int No disposal method is specified. */
 	public const DisposalUnspecified = 0;
 
@@ -380,7 +386,8 @@ class TGIFFrame extends TComponent
 	 */
 	public function setDataSubBlocks(array $value): void
 	{
-		$this->_dataSubBlocks = array_values($value);
+		// A sub-block of no bytes is the terminator, so it is never one of the data's.
+		$this->_dataSubBlocks = array_values(array_filter($value, 'strlen'));
 		$this->_dataSource = null;
 	}
 
@@ -473,7 +480,7 @@ class TGIFFrame extends TComponent
 	 */
 	public function getPixels(): string
 	{
-		TImageGraphics::assertPixelCount($this->_width, $this->_height);   // short data is padded to them
+		static::GraphicsClass::assertPixelCount($this->_width, $this->_height);   // short data is padded to them
 		$pixels = TGIFLZWCompressor::decompress($this->getLzwData(), $this->_minCodeSize);
 		$expected = $this->_width * $this->_height;
 		if (strlen($pixels) > $expected) {
@@ -539,7 +546,7 @@ class TGIFFrame extends TComponent
 			$offset = ($index < $colors ? $index : 0) * 3;
 			$rgb .= substr($palette, $offset, 3);
 		}
-		$image = TImageGraphics::fromRgbPixels($rgb, $this->_width, $this->_height, $mode);
+		$image = static::GraphicsClass::fromRgbPixels($rgb, $this->_width, $this->_height, $mode);
 		if ($image === false) {
 			throw new TInvalidDataValueException('gif_frame_render_failed');
 		}
@@ -553,8 +560,8 @@ class TGIFFrame extends TComponent
 	 */
 	public function setImage(\GdImage|\Imagick $image): void
 	{
-		[$width, $height] = TImageGraphics::getSize($image);
-		[$palette, $pixels] = TImageGraphics::paletteQuantize($image);
+		[$width, $height] = static::GraphicsClass::getSize($image);
+		[$palette, $pixels] = static::GraphicsClass::paletteQuantize($image);
 		$this->_width = $width;
 		$this->_height = $height;
 		$this->setLocalColorTable($palette);
@@ -574,7 +581,31 @@ class TGIFFrame extends TComponent
 	 */
 	public function toBinary(): string
 	{
-		return $this->frameHeaderBytes() . $this->dataBytes();
+		return implode('', $this->toParts());
+	}
+
+	/**
+	 * Returns the frame as the run of byte strings that, joined, are {@see toBinary()}:
+	 * its header, then each data sub-block behind its length.  A stored sub-block is
+	 * handed on as it is, so the file is written without the frame's data being gathered
+	 * into a string of its own first.
+	 * @return string[] The parts, in order.
+	 */
+	public function toParts(): array
+	{
+		$parts = [$this->frameHeaderBytes()];
+		if ($this->_dataSource !== null) {
+			$parts[] = (new TLimitStream($this->_dataSource, $this->_dataLength, $this->_dataOffset))->getContents();
+			return $parts;
+		}
+		foreach ($this->_dataSubBlocks as $block) {
+			foreach (isset($block[self::MaxSubBlock]) ? str_split($block, self::MaxSubBlock) : [$block] as $piece) {
+				$parts[] = chr(strlen($piece));
+				$parts[] = $piece;
+			}
+		}
+		$parts[] = "\x00";
+		return $parts;
 	}
 
 	/**
@@ -604,25 +635,6 @@ class TGIFFrame extends TComponent
 			$out .= $this->_localColorTable;
 		}
 		return $out . chr($this->_minCodeSize);
-	}
-
-	/**
-	 * Returns the frame's image-data run (framed sub-blocks ended by a zero block),
-	 * materializing a deferred frame's data from its source.
-	 * @return string The image-data run.
-	 */
-	private function dataBytes(): string
-	{
-		if ($this->_dataSource !== null) {
-			return (new TLimitStream($this->_dataSource, $this->_dataLength, $this->_dataOffset))->getContents();
-		}
-		$out = '';
-		foreach ($this->_dataSubBlocks as $block) {
-			foreach (str_split($block, self::MaxSubBlock) as $piece) {
-				$out .= chr(strlen($piece)) . $piece;
-			}
-		}
-		return $out . "\x00";
 	}
 
 	//

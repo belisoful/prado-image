@@ -11,6 +11,7 @@
 namespace Prado\IO\Image;
 
 use Prado\IO\Image\Meta\TIPTC;
+use Prado\Prado;
 use Prado\TComponent;
 
 /**
@@ -38,9 +39,21 @@ use Prado\TComponent;
  *
  * @author Brad Anderson <belisoful@icloud.com>
  */
-class TPhotoshopIRB extends TComponent implements \IteratorAggregate, \Countable, IPrivacyScrubbable
+class TPhotoshopIRB extends TComponent implements \IteratorAggregate, \Countable, IPrivacyScrubbable, IConformable
 {
 	use TStreamIOTrait;
+
+	/**
+	 * @var class-string<TIPTC> The class created for IPTC record sets.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const IptcClass = TIPTC::class;
+
+	/**
+	 * @var class-string<TPhotoshopResource> The class created for Photoshop resources.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const ResourceClass = TPhotoshopResource::class;
 
 	/** The APP13 segment signature. */
 	public const Signature = "Photoshop 3.0\x00";
@@ -68,14 +81,14 @@ class TPhotoshopIRB extends TComponent implements \IteratorAggregate, \Countable
 	 * Parses an APP13 payload (or bare 8BIM data), resynchronizing on the 8BIM
 	 * signature to tolerate the padding deviations Photoshop itself writes.
 	 * @param string $data The payload; multiple concatenated APP13 payloads are handled.
-	 * @return false|TPhotoshopIRB The parsed set, or false when no resource was found or the
+	 * @return false|static The parsed set, or false when no resource was found or the
 	 *   data holds more resources than the {@see TImageFile::getMaxParts() part ceiling} allows.
 	 */
-	public static function parse(string $data): false|TPhotoshopIRB
+	public static function parse(string $data): false|static
 	{
 		// Strip every embedded segment signature (each APP13 chunk repeats it).
 		$data = str_replace(self::Signature, '', $data);
-		$irb = new self();
+		$irb = Prado::createComponent(static::class);
 		$len = strlen($data);
 		$pos = strpos($data, self::ResourceSignature);
 		while ($pos !== false && $pos + 10 <= $len) {
@@ -92,7 +105,7 @@ class TPhotoshopIRB extends TComponent implements \IteratorAggregate, \Countable
 			if (!TImageFile::allowsPartCount(count($irb->_resources) + 1, $len)) {
 				return false;   // a block of nothing but empty resources: absent, like any other that does not parse
 			}
-			$irb->_resources[] = new TPhotoshopResource($id, $payload, $name);
+			$irb->_resources[] = new (static::ResourceClass)($id, $payload, $name);
 			$next = min($len, max($sizeAt + 4 + $size + ($size & 1), $pos + 4));
 			// Resynchronize: Photoshop sometimes mispads, so trust the next signature.
 			$pos = strpos($data, self::ResourceSignature, $next);
@@ -104,9 +117,9 @@ class TPhotoshopIRB extends TComponent implements \IteratorAggregate, \Countable
 	 * Parses 8BIM resources from a PSR-7 stream or stream resource, reading from the
 	 * current position to the end.
 	 * @param mixed $stream The {@see \Psr\Http\Message\StreamInterface} or PHP stream resource.
-	 * @return false|TPhotoshopIRB The parsed set, or false when no resource was found.
+	 * @return false|static The parsed set, or false when no resource was found.
 	 */
-	public static function fromStream(mixed $stream): false|TPhotoshopIRB
+	public static function fromStream(mixed $stream): false|static
 	{
 		return static::parse(static::sourceBytes($stream));
 	}
@@ -191,7 +204,7 @@ class TPhotoshopIRB extends TComponent implements \IteratorAggregate, \Countable
 			return null;
 		}
 		$data = $resource->getData();
-		$iptc = TIPTC::parse($data);
+		$iptc = static::IptcClass::parse($data);
 		return $iptc === false ? null : $iptc;
 	}
 
@@ -205,8 +218,34 @@ class TPhotoshopIRB extends TComponent implements \IteratorAggregate, \Countable
 		if ($iptc === null) {
 			$this->removeResource(TPhotoshopResource::IptcNaa);
 		} elseif ($this->getResource(TPhotoshopResource::IptcNaa)?->getData() !== ($data = $iptc->toBinary(null, false))) {
-			$this->setResource(new TPhotoshopResource(TPhotoshopResource::IptcNaa, $data));
+			$this->setResource(new (static::ResourceClass)(TPhotoshopResource::IptcNaa, $data));
 		}
+	}
+
+	/**
+	 * Reports where the IPTC record set the block holds departs from IIM.  The resources
+	 * themselves have no form to depart from: each is its id, its name and its bytes.
+	 * @param int $types The {@see TConformanceCategory} flags to report. Default {@see TConformanceCategory::All}.
+	 * @return array<string, string> What is wrong, by IPTC tag id.
+	 */
+	public function validate(int $types = TConformanceCategory::All): array
+	{
+		return $this->getIPTC()?->validate($types) ?? [];
+	}
+
+	/**
+	 * Corrects what {@see validate()} reports in the IPTC record set the block holds.
+	 * @param int $types The {@see TConformanceCategory} flags to correct. Default {@see TConformanceCategory::Safe}.
+	 * @return int The number of corrections made.
+	 */
+	public function conform(int $types = TConformanceCategory::Safe): int
+	{
+		$iptc = $this->getIPTC();
+		$corrected = $iptc === null ? 0 : $iptc->conform($types);
+		if ($corrected > 0) {
+			$this->setIPTC($iptc);
+		}
+		return $corrected;
 	}
 
 	//

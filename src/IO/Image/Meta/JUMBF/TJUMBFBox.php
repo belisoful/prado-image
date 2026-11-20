@@ -44,6 +44,12 @@ use Prado\IO\Image\BMFF\TBMFFBox;
  */
 class TJUMBFBox extends TBMFFBox
 {
+	/**
+	 * @var class-string<TJUMBFDescription> The class created for JUMBF description boxes.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const DescriptionClass = TJUMBFDescription::class;
+
 	/** The superbox type, whose payload is a sequence of child boxes. */
 	public const SuperBox = 'jumb';
 
@@ -106,7 +112,7 @@ class TJUMBFBox extends TBMFFBox
 	public static function xml(string $label, string $xml): static
 	{
 		return static::superBox(
-			new TJUMBFDescription(TJUMBFDescription::XmlUuid, $label),
+			new (static::DescriptionClass)(TJUMBFDescription::XmlUuid, $label),
 			[new static(self::XmlBox, $xml)],
 		);
 	}
@@ -120,7 +126,7 @@ class TJUMBFBox extends TBMFFBox
 	public static function json(string $label, string $json): static
 	{
 		return static::superBox(
-			new TJUMBFDescription(TJUMBFDescription::JsonUuid, $label),
+			new (static::DescriptionClass)(TJUMBFDescription::JsonUuid, $label),
 			[new static(self::JsonBox, $json)],
 		);
 	}
@@ -137,7 +143,7 @@ class TJUMBFBox extends TBMFFBox
 	public static function exifAnnotation(string $label, string $data, string $contentType = self::XmlBox): static
 	{
 		return static::superBox(
-			new TJUMBFDescription(TJUMBFDescription::ExifUuid, $label),
+			new (static::DescriptionClass)(TJUMBFDescription::ExifUuid, $label),
 			[new static($contentType, $data)],
 		);
 	}
@@ -160,7 +166,7 @@ class TJUMBFBox extends TBMFFBox
 	{
 		foreach ($this->getChildren() as $child) {
 			if ($child->getType() === self::DescriptionBox) {
-				$description = TJUMBFDescription::parse($child->getPayload());
+				$description = static::DescriptionClass::parse($child->getPayload());
 				return $description === false ? null : $description;
 			}
 		}

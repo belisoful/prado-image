@@ -58,6 +58,24 @@ use Prado\IO\Image\Meta\JUMBF\TJUMBFBox;
  */
 class TJXL extends TImageFile
 {
+	/**
+	 * @var class-string<TBMFFBox> The class created for boxes.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const BoxClass = TBMFFBox::class;
+
+	/**
+	 * @var class-string<TJUMBFBox> The class created for JUMBF boxes.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const JumbfBoxClass = TJUMBFBox::class;
+
+	/**
+	 * @var class-string<TJXLSizeHeader> The class created for JPEG XL size headers.
+	 *   A subclass names its own here to have that created instead.
+	 */
+	public const SizeHeaderClass = TJXLSizeHeader::class;
+
 	/** The bare codestream signature. */
 	public const CodestreamSignature = "\xFF\x0A";
 
@@ -223,7 +241,7 @@ class TJXL extends TImageFile
 	public function getSizeHeader(): ?TJXLSizeHeader
 	{
 		$codestream = $this->getCodestream();
-		return $codestream === null ? null : TJXLSizeHeader::fromCodestream($codestream);
+		return $codestream === null ? null : static::SizeHeaderClass::fromCodestream($codestream);
 	}
 
 	/**
@@ -275,7 +293,7 @@ class TJXL extends TImageFile
 		if ($text === null) {
 			return null;
 		}
-		$xmp = TXMP::parse($text);
+		$xmp = static::XmpClass::parse($text);
 		return $xmp === false ? null : $xmp;
 	}
 
@@ -304,7 +322,7 @@ class TJXL extends TImageFile
 			return null;
 		}
 		try {
-			$exif = TEXIF::fromTiffString($tiff);
+			$exif = static::ExifClass::fromTiffString($tiff);
 		} catch (TIOException $e) {
 			return null;
 		}
@@ -337,7 +355,7 @@ class TJXL extends TImageFile
 				continue;
 			}
 			// A `jumb` box always re-reads as one JUMBF superbox, so this adds exactly one.
-			foreach (TJUMBFBox::parseBoxes($box->toBinary()) as $jumbf) {
+			foreach (static::JumbfBoxClass::parseBoxes($box->toBinary()) as $jumbf) {
 				$boxes[] = $jumbf;
 			}
 		}
@@ -355,7 +373,7 @@ class TJXL extends TImageFile
 		$at = $this->metaInsertIndex($kept);
 		$fresh = [];
 		foreach ($boxes as $jumbf) {
-			foreach (TBMFFBox::parseBoxes($jumbf->toBinary()) as $parsed) {
+			foreach (static::BoxClass::parseBoxes($jumbf->toBinary()) as $parsed) {
 				$fresh[] = $parsed;
 			}
 		}
@@ -434,11 +452,12 @@ class TJXL extends TImageFile
 		if ($this->_isBareCodestream) {
 			return $this->_codestream;
 		}
-		$bytes = '';
+		$parts = [];
 		foreach ($this->_boxes as $box) {
-			$bytes .= $box->toBinary();
+			array_push($parts, ...$box->toParts());
 		}
-		return $bytes . $this->_remainder;
+		$parts[] = $this->_remainder;
+		return implode('', $parts);
 	}
 
 	/**
@@ -457,7 +476,7 @@ class TJXL extends TImageFile
 		if (!str_starts_with($bytes, self::Signature)) {
 			throw new TIOException('jxl_invalid', 'missing the codestream or container signature');
 		}
-		[$this->_boxes, $this->_remainder] = TBMFFBox::parseSequence($bytes);
+		[$this->_boxes, $this->_remainder] = static::BoxClass::parseSequence($bytes);
 		$this->readDimensions();
 	}
 
@@ -472,9 +491,9 @@ class TJXL extends TImageFile
 			return;
 		}
 		$this->_boxes = [
-			new TBMFFBox(self::SignatureBoxType, self::SignatureBoxContent),
-			new TBMFFBox(self::FileTypeBox, self::Brand . pack('N', 0) . self::Brand),
-			new TBMFFBox(self::CodestreamBox, $this->_codestream),
+			new (static::BoxClass)(self::SignatureBoxType, self::SignatureBoxContent),
+			new (static::BoxClass)(self::FileTypeBox, self::Brand . pack('N', 0) . self::Brand),
+			new (static::BoxClass)(self::CodestreamBox, $this->_codestream),
 		];
 		$this->_isBareCodestream = false;
 		$this->_codestream = '';
@@ -518,12 +537,12 @@ class TJXL extends TImageFile
 				continue;
 			}
 			if ($payload !== null && !$replaced) {
-				$boxes[] = new TBMFFBox($type, $payload);
+				$boxes[] = new (static::BoxClass)($type, $payload);
 				$replaced = true;
 			}
 		}
 		if ($payload !== null && !$replaced) {
-			array_splice($boxes, $this->metaInsertIndex($boxes), 0, [new TBMFFBox($type, $payload)]);
+			array_splice($boxes, $this->metaInsertIndex($boxes), 0, [new (static::BoxClass)($type, $payload)]);
 		}
 		$this->_boxes = $boxes;
 	}

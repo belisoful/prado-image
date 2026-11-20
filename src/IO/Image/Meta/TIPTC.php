@@ -12,6 +12,8 @@ namespace Prado\IO\Image\Meta;
 
 use Prado\Collections\TMap;
 use Prado\Exceptions\TInvalidDataValueException;
+use Prado\IO\Image\IConformable;
+use Prado\IO\Image\TConformanceCategory;
 use Prado\IO\Image\IPrivacyScrubbable;
 use Prado\IO\Image\TImageFile;
 use Prado\IO\Image\TImageGraphics;
@@ -55,14 +57,20 @@ use Psr\Http\Message\StreamInterface;
  * @see https://exiftool.org/TagNames/IPTC.html
  * @see https://www.iptc.org/std/IIM/4.1/specification/IIMV4.1.pdf
  */
-class TIPTC extends TMap implements IPrivacyScrubbable
+class TIPTC extends TMap implements IPrivacyScrubbable, IConformable
 {
 	use \Prado\IO\Image\TStreamIOTrait;
 
 	/**
+	 * @var class-string<TImageGraphics> The graphics facade this class draws through.
+	 *   A subclass names its own here to have that used instead.
+	 */
+	public const GraphicsClass = TImageGraphics::class;
+
+	/**
 	 * @var bool Whether the datasets were {@see read() read from bytes}.  Such a set is
 	 *   written back with the datasets it holds; only a set built from nothing is completed
-	 *   by {@see validate()} when it is written.
+	 *   by {@see conform()} when it is written.
 	 */
 	private bool $_asRead = false;
 
@@ -79,7 +87,7 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 	 * @var string The date written into the mandatory `DateSent` envelope field after a
 	 *   {@see clearPrivateData()} scrub of {@see TPrivacyCategory::Timestamp}: IIM requires
 	 *   the field, so it cannot be dropped, and refilling it with today's date (as
-	 *   {@see validate()} otherwise does) would stamp a fresh timestamp onto a file being
+	 *   {@see conform()} otherwise does) would stamp a fresh timestamp onto a file being
 	 *   scrubbed.  Year 0001 is legal per {@see DATEVALUE_REGEX} and obviously synthetic.
 	 */
 	public const ScrubbedDate = '00010101';
@@ -295,7 +303,7 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 	 */
 	public static function parse(mixed &$iptc_block, ?string $charset = null): false|TIPTC
 	{
-		$iptc = new TIPTC();
+		$iptc = Prado::createComponent(static::class);
 		if ($iptc->read($iptc_block, $charset)) {
 			return $iptc;
 		}
@@ -609,46 +617,96 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 	}
 
 	/**
-	 * Ensures mandatory envelope tags are present and removes unneeded version tags.
-	 *
-	 * {@see toBinary()} does this for a set built from nothing, which is being sent for the
-	 * first time.  It does not for a set {@see read() read from bytes}: files in the wild
-	 * rarely carry the envelope, and stamping one would add today's date and a number
-	 * derived from it to a file that was only being rewritten.  Call this to complete such
-	 * a set on purpose.
+	 * Works out where the set departs from IIM: the datasets it requires and lacks, and the
+	 * record versions that stand where their record holds nothing.
+	 * @return array<string, array{0: int, 1: string, 2: null|int|string}> For each dataset
+	 *   out of line, by tag id: its {@see TConformanceCategory}, what is wrong, and the value
+	 *   that corrects it -- null where the correction is to remove the dataset.
 	 */
-	public function validate(): void
+	private function departures(): array
 	{
-		$this[TIPTCTags::EnvelopeRecordVersion] ??= 4;
-		$this[TIPTCTags::FileFormat] ??= 1;
-		$this[TIPTCTags::FileVersion] ??= 4;
-		$this[TIPTCTags::ServiceIdentifier] ??= 'PRADO' . substr(Prado::getVersion(), 0, 5);
-		$this[TIPTCTags::DateSent] ??= self::formatIPTCDate();
-		$this[TIPTCTags::EnvelopeNumber] ??= self::computeEnvelopeNumber($this[TIPTCTags::ServiceIdentifier], $this[TIPTCTags::DateSent]);
-
-		$hasApp = $hasNews = false;
-		foreach ($this->toArray() as $id => $value) {
-			if (strncmp($id, '2#', 2) === 0 && $id !== '2#000') {
-				$hasApp = true;
-			} elseif (strncmp($id, '3#', 2) === 0 && $id !== '3#000') {
-				$hasNews = true;
+		$found = [];
+		foreach ([TIPTCTags::EnvelopeRecordVersion => 4, TIPTCTags::FileFormat => 1, TIPTCTags::FileVersion => 4] as $id => $value) {
+			if (!$this->contains($id)) {
+				$found[$id] = [TConformanceCategory::Required, 'required and missing', $value];
 			}
 		}
-		if ($hasApp) {
-			$this[TIPTCTags::ApplicationRecordVersion] ??= 4;
-		} elseif ($this->contains(TIPTCTags::ApplicationRecordVersion)) {
-			unset($this[TIPTCTags::ApplicationRecordVersion]);
+		// What nothing in the file states: who sent it, when, and the number made of the two.
+		$service = $this[TIPTCTags::ServiceIdentifier] ?? 'PRADO' . substr(Prado::getVersion(), 0, 5);
+		$date = $this[TIPTCTags::DateSent] ?? self::formatIPTCDate();
+		$invented = [
+			TIPTCTags::ServiceIdentifier => $service,
+			TIPTCTags::DateSent => $date,
+			TIPTCTags::EnvelopeNumber => self::computeEnvelopeNumber($service, $date),
+		];
+		foreach ($invented as $id => $value) {
+			if (!$this->contains($id)) {
+				$found[$id] = [TConformanceCategory::Invented, 'required and missing', $value];
+			}
 		}
-		if ($hasNews) {
-			$this[TIPTCTags::NewsPhotoVersion] ??= 4;
-		} elseif ($this->contains(TIPTCTags::NewsPhotoVersion)) {
-			unset($this[TIPTCTags::NewsPhotoVersion]);
+		foreach (['2#' => TIPTCTags::ApplicationRecordVersion, '3#' => TIPTCTags::NewsPhotoVersion] as $record => $version) {
+			$used = count(array_filter($this->getKeys(), fn ($id) => strncmp($id, $record, 2) === 0 && $id !== $version)) > 0;
+			if ($used && !$this->contains($version)) {
+				$found[$version] = [TConformanceCategory::Required, 'required and missing', 4];
+			} elseif (!$used && $this->contains($version)) {
+				$found[$version] = [TConformanceCategory::Structure, 'a record version with no dataset in its record', null];
+			}
 		}
+		return $found;
+	}
+
+	/**
+	 * Reports where the set departs from IIM, changing nothing: the envelope datasets and
+	 * record versions it requires and lacks, and a record version standing where its record
+	 * holds no dataset.
+	 * @param int $types The {@see TConformanceCategory} flags to report. Default {@see TConformanceCategory::All}.
+	 * @return array<string, string> What is wrong, by tag id.
+	 */
+	public function validate(int $types = TConformanceCategory::All): array
+	{
+		$problems = [];
+		foreach ($this->departures() as $id => [$category, $problem]) {
+			if ($types & $category) {
+				$problems[$id] = $problem;
+			}
+		}
+		return $problems;
+	}
+
+	/**
+	 * Corrects what {@see validate()} reports: adds the record versions and the file
+	 * format, removes a record version whose record holds nothing, and -- only under
+	 * {@see TConformanceCategory::Invented} -- stamps the envelope with a service identifier,
+	 * today as the date sent, and the envelope number made of the two.
+	 *
+	 * {@see toBinary()} does all of it for a set built from nothing, which is being sent for
+	 * the first time.  It does none of it for a set {@see read() read from bytes}: files in
+	 * the wild rarely carry the envelope, and stamping one would add today's date and a
+	 * number derived from it to a file that was only being rewritten.  Call this to
+	 * complete such a set on purpose.
+	 * @param int $types The {@see TConformanceCategory} flags to correct. Default {@see TConformanceCategory::Safe}.
+	 * @return int The number of datasets added or removed.
+	 */
+	public function conform(int $types = TConformanceCategory::Safe): int
+	{
+		$corrected = 0;
+		foreach ($this->departures() as $id => [$category, , $value]) {
+			if (($types & $category) === 0) {
+				continue;
+			}
+			if ($value === null) {
+				unset($this[$id]);
+			} else {
+				$this[$id] = $value;
+			}
+			$corrected++;
+		}
+		return $corrected;
 	}
 
 	/**
 	 * Serializes the datasets to an IPTC binary block.  A set built from nothing is
-	 * {@see validate() completed} first and written in the order of its tag ids.  A set read
+	 * {@see conform() completed} first and written in the order of its tag ids.  A set read
 	 * from bytes is written as it stands: the very bytes that were read while no dataset
 	 * has been added, changed or removed, and after that its datasets in the order the file
 	 * had them, a repeated dataset's values together where the first of them stood.
@@ -667,7 +725,7 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 		}
 		$charset ??= self::defaultCharset();
 		if (!$this->_asRead) {
-			$this->validate();
+			$this->conform(TConformanceCategory::All);
 		}
 
 		$result = '';
@@ -952,7 +1010,7 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 
 	/**
 	 * Removes every dataset.  The emptied set is a new one: what is built in it next is
-	 * {@see validate() completed} when it is written.
+	 * {@see conform() completed} when it is written.
 	 */
 	public function clear(): void
 	{
@@ -1063,7 +1121,7 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 			}
 		}
 		// IIM mandates DateSent, ServiceIdentifier, and EnvelopeNumber in the envelope, and
-		// validate() refills any that are missing with today's date, a PRADO service id,
+		// conform() refills any that are missing with today's date, a PRADO service id,
 		// and an envelope number derived from them.  A scrub must not leave a real timestamp
 		// or an identifier derived from one behind, so an existing envelope date is replaced
 		// by a fixed, obviously synthetic sentinel and an existing envelope number is
@@ -1302,7 +1360,7 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 				}
 			}
 		}
-		return TImageGraphics::fromRgbPixels($rgb, 460, 128, $mode);
+		return static::GraphicsClass::fromRgbPixels($rgb, 460, 128, $mode);
 	}
 
 	/**
@@ -1314,11 +1372,11 @@ class TIPTC extends TMap implements IPrivacyScrubbable
 	 */
 	public function setRasterizedCaptionImage(\GdImage|\Imagick $image, bool $dither = true): bool
 	{
-		$innerImage = TImageGraphics::resampled($image, 460, 128);
+		$innerImage = static::GraphicsClass::resampled($image, 460, 128);
 		if ($innerImage === false) {
 			return false;
 		}
-		$mono = TImageGraphics::monoPixels($innerImage, $dither);
+		$mono = static::GraphicsClass::monoPixels($innerImage, $dither);
 		if ($mono === false) {
 			return false;
 		}

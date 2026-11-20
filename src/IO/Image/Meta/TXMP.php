@@ -10,6 +10,8 @@
 
 namespace Prado\IO\Image\Meta;
 
+use Prado\IO\Image\IConformable;
+use Prado\IO\Image\TConformanceCategory;
 use Prado\IO\Image\IPrivacyScrubbable;
 use Prado\IO\Image\TPrivacyCategory;
 use Prado\TComponent;
@@ -50,7 +52,7 @@ use Prado\TComponent;
  * @author Brad Anderson <belisoful@icloud.com>
  * @see https://www.iso.org/standard/75163.html ISO 16684-1 (XMP)
  */
-class TXMP extends TComponent implements IPrivacyScrubbable
+class TXMP extends TComponent implements IPrivacyScrubbable, IConformable
 {
 	use \Prado\IO\Image\TStreamIOTrait;
 
@@ -1237,10 +1239,10 @@ class TXMP extends TComponent implements IPrivacyScrubbable
 
 	/**
 	 * Checks every property against its schema's defined form.
-	 * @return array<string, string> The `prefix:name` to complaint map, empty when the
-	 *   packet agrees with the schemas it uses.
+	 * @return array<string, array{0: string, 1: string, 2: string}> For each property out of
+	 *   line, by `prefix:name`: its namespace, its name, and the complaint.
 	 */
-	public function validate(): array
+	private function formProblems(): array
 	{
 		$problems = [];
 		foreach ($this->getPropertyNames() as [$namespace, $name]) {
@@ -1255,21 +1257,63 @@ class TXMP extends TComponent implements IPrivacyScrubbable
 
 			if ($expectedArray !== null) {
 				if ($actualArray === null) {
-					$problems[$label] = "expected an rdf:$expectedArray array";
+					$problems[$label] = [$namespace, $name, "expected an rdf:$expectedArray array"];
 				} elseif ($actualArray !== $expectedArray) {
-					$problems[$label] = "expected an rdf:$expectedArray array, found rdf:$actualArray";
+					$problems[$label] = [$namespace, $name, "expected an rdf:$expectedArray array, found rdf:$actualArray"];
 				} elseif ($form === TXMPSchemas::LangAlt && $this->getLangAlt($namespace, $name) === []) {
-					$problems[$label] = 'expected language alternatives';
+					$problems[$label] = [$namespace, $name, 'expected language alternatives'];
 				}
 				continue;
 			}
 			if ($form === TXMPSchemas::Struct && !(is_array($value) && !array_is_list($value))) {
-				$problems[$label] = 'expected a structure';
+				$problems[$label] = [$namespace, $name, 'expected a structure'];
 			} elseif ($form === TXMPSchemas::Simple && is_array($value)) {
-				$problems[$label] = 'expected a simple value';
+				$problems[$label] = [$namespace, $name, 'expected a simple value'];
 			}
 		}
 		return $problems;
+	}
+
+	/**
+	 * Reports the properties stored in a form other than their schema's, changing nothing.
+	 * @param int $types The {@see TConformanceCategory} flags to report; a property's form is
+	 *   {@see TConformanceCategory::Type}. Default {@see TConformanceCategory::All}.
+	 * @return array<string, string> The `prefix:name` to complaint map, empty when the
+	 *   packet agrees with the schemas it uses.
+	 */
+	public function validate(int $types = TConformanceCategory::All): array
+	{
+		return ($types & TConformanceCategory::Type) === 0 ? [] : array_map(fn (array $problem) => $problem[2], $this->formProblems());
+	}
+
+	/**
+	 * Rewrites the properties {@see validate()} reports in the form their schema gives
+	 * them: text where a collection belongs becomes that collection of one item, and a
+	 * collection of the wrong kind becomes the right one.  A property that would have to be
+	 * taken apart or guessed at -- a collection where one value belongs, text where a
+	 * structure does -- is left as it is and stays reported.
+	 * @param int $types The {@see TConformanceCategory} flags to correct. Default {@see TConformanceCategory::Safe}.
+	 * @return int The number of properties rewritten.
+	 */
+	public function conform(int $types = TConformanceCategory::Safe): int
+	{
+		if (($types & TConformanceCategory::Type) === 0) {
+			return 0;
+		}
+		$corrected = 0;
+		foreach ($this->formProblems() as $label => [$namespace, $name]) {
+			if (TXMPSchemas::arrayFormOf($namespace, $name) === null) {
+				continue;
+			}
+			$value = $this->getProperty($namespace, $name);
+			if (!is_array($value) && TXMPSchemas::formOf($namespace, $name) !== TXMPSchemas::LangAlt) {
+				$value = [$value];   // text where a collection belongs is that collection of one item
+			}
+			$this->setProperty($namespace, $name, null);
+			$this->setProperty($namespace, $name, $value);
+			$corrected += (int) !isset($this->formProblems()[$label]);
+		}
+		return $corrected;
 	}
 
 	/**
